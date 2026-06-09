@@ -13,6 +13,7 @@ import {
   Zap,
   AlertTriangle,
   RotateCcw,
+  KeyRound,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
@@ -27,6 +28,12 @@ import {
   AccordionTrigger,
   AccordionContent,
 } from '@/components/ui/accordion';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import type { WhatsAppConfig as WhatsAppConfigType } from '@/types';
 
 const MASKED_TOKEN = '••••••••••••••••';
@@ -261,6 +268,24 @@ export function WhatsAppConfig() {
     toast.success('Webhook URL copied to clipboard');
   }
 
+  async function handleGenerateVerifyToken() {
+    const bytes = new Uint8Array(32);
+    window.crypto.getRandomValues(bytes);
+    const token = Array.from(bytes, (byte) =>
+      byte.toString(16).padStart(2, '0')
+    ).join('');
+
+    setVerifyToken(token);
+    setVerifyTokenEdited(true);
+
+    try {
+      await navigator.clipboard.writeText(token);
+      toast.success('Verify token generated and copied');
+    } catch {
+      toast.success('Verify token generated');
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -395,19 +420,42 @@ export function WhatsAppConfig() {
 
             <div className="space-y-2">
               <Label className="text-slate-300">Webhook Verify Token</Label>
-              <Input
-                placeholder="Create a custom verify token"
-                value={verifyToken}
-                onChange={(e) => {
-                  setVerifyToken(e.target.value);
-                  setVerifyTokenEdited(true);
-                }}
-                className="bg-slate-800 border-slate-700 text-white placeholder:text-slate-500"
-              />
+              <div className="flex gap-2">
+                <Input
+                  placeholder="Create a custom verify token"
+                  value={verifyToken}
+                  onChange={(e) => {
+                    setVerifyToken(e.target.value);
+                    setVerifyTokenEdited(true);
+                  }}
+                  className="bg-slate-800 border-slate-700 text-white placeholder:text-slate-500"
+                />
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          aria-label="Generate and copy verify token"
+                          onClick={handleGenerateVerifyToken}
+                          className="shrink-0 border-slate-700 text-slate-300 hover:text-white hover:bg-slate-800"
+                        />
+                      }
+                    >
+                      <KeyRound className="size-4" />
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                      Generate and copy verify token
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
               <p className="text-xs text-slate-500">
                 {config
-                  ? 'Leave blank to keep the saved verify token. Enter a new value to update it.'
-                  : 'A custom string you create. Must match the token you set in Meta webhook settings.'}
+                  ? 'Leave blank to keep the saved verify token. Generate or enter a new value to update it.'
+                  : 'Generate or enter a custom string. It must match the token you set in Meta webhook settings.'}
               </p>
             </div>
           </CardContent>
