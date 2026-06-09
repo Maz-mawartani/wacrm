@@ -53,6 +53,7 @@ export function WhatsAppConfig() {
   const [accessToken, setAccessToken] = useState('');
   const [verifyToken, setVerifyToken] = useState('');
   const [tokenEdited, setTokenEdited] = useState(false);
+  const [verifyTokenEdited, setVerifyTokenEdited] = useState(false);
 
   const webhookUrl =
     typeof window !== 'undefined'
@@ -80,6 +81,7 @@ export function WhatsAppConfig() {
         setAccessToken(MASKED_TOKEN);
         setVerifyToken('');
         setTokenEdited(false);
+        setVerifyTokenEdited(false);
       } else {
         setConfig(null);
         setPhoneNumberId('');
@@ -87,6 +89,7 @@ export function WhatsAppConfig() {
         setAccessToken('');
         setVerifyToken('');
         setTokenEdited(false);
+        setVerifyTokenEdited(false);
       }
 
       // Then verify health via the API (decrypts token + pings Meta)
@@ -150,19 +153,14 @@ export function WhatsAppConfig() {
       const payload: Record<string, unknown> = {
         phone_number_id: phoneNumberId.trim(),
         waba_id: wabaId.trim() || null,
-        verify_token: verifyToken.trim() || null,
       };
 
       if (tokenEdited && accessToken !== MASKED_TOKEN && accessToken.trim()) {
         payload.access_token = accessToken.trim();
-      } else if (config) {
-        // Existing config — reuse stored encrypted token by decrypting on the
-        // server. But our POST handler requires an access_token to verify
-        // with Meta. If the user didn't change the token, we need to signal
-        // that. Simplest: require token re-entry if they're updating.
-        toast.error('Please re-enter the Access Token to save changes');
-        setSaving(false);
-        return;
+      }
+
+      if (!config || verifyTokenEdited) {
+        payload.verify_token = verifyToken.trim() || null;
       }
 
       const res = await fetch('/api/whatsapp/config', {
@@ -246,6 +244,7 @@ export function WhatsAppConfig() {
       setAccessToken('');
       setVerifyToken('');
       setTokenEdited(false);
+      setVerifyTokenEdited(false);
       setConnectionStatus('disconnected');
       setResetReason(null);
       setStatusMessage('');
@@ -399,11 +398,16 @@ export function WhatsAppConfig() {
               <Input
                 placeholder="Create a custom verify token"
                 value={verifyToken}
-                onChange={(e) => setVerifyToken(e.target.value)}
+                onChange={(e) => {
+                  setVerifyToken(e.target.value);
+                  setVerifyTokenEdited(true);
+                }}
                 className="bg-slate-800 border-slate-700 text-white placeholder:text-slate-500"
               />
               <p className="text-xs text-slate-500">
-                A custom string you create. Must match the token you set in Meta webhook settings.
+                {config
+                  ? 'Leave blank to keep the saved verify token. Enter a new value to update it.'
+                  : 'A custom string you create. Must match the token you set in Meta webhook settings.'}
               </p>
             </div>
           </CardContent>

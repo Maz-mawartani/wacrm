@@ -121,21 +121,68 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-    const { phone_number_id, waba_id, access_token, verify_token } = body
+    const phoneNumberId =
+      typeof body.phone_number_id === 'string' ? body.phone_number_id.trim() : ''
+    const wabaId = typeof body.waba_id === 'string' ? body.waba_id.trim() : ''
+    const accessTokenInput =
+      typeof body.access_token === 'string' ? body.access_token.trim() : ''
+    const verifyTokenInput =
+      typeof body.verify_token === 'string' ? body.verify_token.trim() : ''
+    const hasVerifyTokenInput = Object.prototype.hasOwnProperty.call(
+      body,
+      'verify_token'
+    )
 
-    if (!access_token || !phone_number_id) {
+    if (!phoneNumberId) {
+      return NextResponse.json(
+        { error: 'phone_number_id is required' },
+        { status: 400 }
+      )
+    }
+
+    const { data: existing, error: existingError } = await supabase
+      .from('whatsapp_config')
+      .select('id, access_token')
+      .eq('user_id', user.id)
+      .maybeSingle()
+
+    if (existingError) {
+      console.error('Error fetching existing whatsapp_config:', existingError)
+      return NextResponse.json(
+        { error: 'Failed to fetch existing configuration' },
+        { status: 500 }
+      )
+    }
+
+    if (!existing && !accessTokenInput) {
       return NextResponse.json(
         { error: 'access_token and phone_number_id are required' },
         { status: 400 }
       )
     }
 
+    let accessToken = accessTokenInput
+    if (!accessToken && existing?.access_token) {
+      try {
+        accessToken = decrypt(existing.access_token)
+      } catch (err) {
+        console.error('[whatsapp/config POST] Token decryption failed:', err)
+        return NextResponse.json(
+          {
+            error:
+              'Stored access token cannot be decrypted with the current ENCRYPTION_KEY. Reset the configuration, then re-save it with the permanent access token.',
+          },
+          { status: 400 }
+        )
+      }
+    }
+
     // Verify credentials with Meta BEFORE saving
     let phoneInfo
     try {
       phoneInfo = await verifyPhoneNumber({
-        phoneNumberId: phone_number_id,
-        accessToken: access_token,
+        phoneNumberId,
+        accessToken,
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown Meta API error'
@@ -147,11 +194,17 @@ export async function POST(request: Request) {
     }
 
     // Encrypt sensitive tokens before storing
-    let encryptedAccessToken: string
-    let encryptedVerifyToken: string | null
+    let encryptedAccessToken: string | undefined
+    let encryptedVerifyToken: string | null | undefined
     try {
-      encryptedAccessToken = encrypt(access_token)
-      encryptedVerifyToken = verify_token ? encrypt(verify_token) : null
+      encryptedAccessToken = accessTokenInput
+        ? encrypt(accessTokenInput)
+        : undefined
+      encryptedVerifyToken = hasVerifyTokenInput
+        ? verifyTokenInput
+          ? encrypt(verifyTokenInput)
+          : null
+        : undefined
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown encryption error'
       console.error('Encryption failed:', message)
@@ -164,25 +217,24 @@ export async function POST(request: Request) {
       )
     }
 
-    // Upsert — overwrite any existing (possibly corrupted) config
-    const { data: existing } = await supabase
-      .from('whatsapp_config')
-      .select('id')
-      .eq('user_id', user.id)
-      .maybeSingle()
-
     if (existing) {
+      const update: Record<string, unknown> = {
+        phone_number_id: phoneNumberId,
+        waba_id: wabaId || null,
+        status: 'connected',
+        connected_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+      if (encryptedAccessToken !== undefined) {
+        update.access_token = encryptedAccessToken
+      }
+      if (encryptedVerifyToken !== undefined) {
+        update.verify_token = encryptedVerifyToken
+      }
+
       const { error: updateError } = await supabase
         .from('whatsapp_config')
-        .update({
-          phone_number_id,
-          waba_id: waba_id || null,
-          access_token: encryptedAccessToken,
-          verify_token: encryptedVerifyToken,
-          status: 'connected',
-          connected_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
+        .update(update)
         .eq('user_id', user.id)
 
       if (updateError) {
@@ -197,10 +249,10 @@ export async function POST(request: Request) {
         .from('whatsapp_config')
         .insert({
           user_id: user.id,
-          phone_number_id,
-          waba_id: waba_id || null,
+          phone_number_id: phoneNumberId,
+          waba_id: wabaId || null,
           access_token: encryptedAccessToken,
-          verify_token: encryptedVerifyToken,
+          verify_token: encryptedVerifyToken ?? null,
           status: 'connected',
           connected_at: new Date().toISOString(),
         })
