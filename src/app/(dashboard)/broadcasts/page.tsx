@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Broadcast } from '@/types';
@@ -26,6 +26,21 @@ const POLL_INTERVAL_MS = 5_000;
 function percent(numerator: number, denominator: number): number {
   if (!denominator) return 0;
   return Math.round((numerator / denominator) * 100);
+}
+
+function sortBroadcasts(rows: Broadcast[]): Broadcast[] {
+  return [...rows].sort(
+    (a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+}
+
+function upsertBroadcast(rows: Broadcast[], next: Broadcast): Broadcast[] {
+  const exists = rows.some((row) => row.id === next.id);
+  const merged = exists
+    ? rows.map((row) => (row.id === next.id ? { ...row, ...next } : row))
+    : [next, ...rows];
+  return sortBroadcasts(merged);
 }
 
 function RateCell({
@@ -63,7 +78,7 @@ export default function BroadcastsPage() {
   // Used to kick off polling only while something is actively sending.
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  async function fetchBroadcasts() {
+  const fetchBroadcasts = useCallback(async () => {
     try {
       const supabase = createClient();
       const { data, error: fetchError } = await supabase
@@ -78,10 +93,49 @@ export default function BroadcastsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     fetchBroadcasts();
+  }, [fetchBroadcasts]);
+
+  useEffect(() => {
+    const supabase = createClient();
+    const channel = supabase
+      .channel('broadcasts-list-status')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'broadcasts' },
+        (payload) => {
+          setBroadcasts((current) =>
+            upsertBroadcast(current, payload.new as Broadcast),
+          );
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'broadcasts' },
+        (payload) => {
+          setBroadcasts((current) =>
+            upsertBroadcast(current, payload.new as Broadcast),
+          );
+        },
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'broadcasts' },
+        (payload) => {
+          const oldRow = payload.old as Partial<Broadcast>;
+          setBroadcasts((current) =>
+            current.filter((broadcast) => broadcast.id !== oldRow.id),
+          );
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
   }, []);
 
   const anySending = useMemo(
@@ -123,7 +177,7 @@ export default function BroadcastsPage() {
       stopPolling();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [anySending]);
+  }, [anySending, fetchBroadcasts]);
 
   if (loading) {
     return (

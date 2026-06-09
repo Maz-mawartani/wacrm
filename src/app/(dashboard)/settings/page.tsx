@@ -1,7 +1,14 @@
 'use client';
 
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Settings, MessageSquare, Tag, User, Palette } from 'lucide-react';
+import {
+  Settings,
+  MessageSquare,
+  Tag,
+  User,
+  Palette,
+  Users,
+} from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { WhatsAppConfig } from '@/components/settings/whatsapp-config';
 import { TemplateManager } from '@/components/settings/template-manager';
@@ -10,12 +17,14 @@ import { ProfileForm } from '@/components/settings/profile-form';
 import { PasswordForm } from '@/components/settings/password-form';
 import { SessionsCard } from '@/components/settings/sessions-card';
 import { AppearancePanel } from '@/components/settings/appearance-panel';
+import { UserManager } from '@/components/settings/user-manager';
 
 const TAB_VALUES = [
   'profile',
   'whatsapp',
   'templates',
   'tags',
+  'users',
   'appearance',
 ] as const;
 type TabValue = (typeof TAB_VALUES)[number];
@@ -46,8 +55,8 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-2xl font-bold text-white">Settings</h1>
         <p className="text-sm text-slate-400 mt-1">
-          Manage your profile, WhatsApp® integration, message templates, and
-          tags.
+          Manage your profile, WhatsApp® integration, message templates, tags,
+          and users.
         </p>
       </div>
 
@@ -82,6 +91,13 @@ export default function SettingsPage() {
             Tags
           </TabsTrigger>
           <TabsTrigger
+            value="users"
+            className="data-active:bg-slate-800 data-active:text-primary text-slate-400"
+          >
+            <Users className="size-4" />
+            Users
+          </TabsTrigger>
+          <TabsTrigger
             value="appearance"
             className="data-active:bg-slate-800 data-active:text-primary text-slate-400"
           >
@@ -106,6 +122,10 @@ export default function SettingsPage() {
 
         <TabsContent value="tags">
           <TagManager />
+        </TabsContent>
+
+        <TabsContent value="users">
+          <UserManager />
         </TabsContent>
 
         <TabsContent value="appearance">

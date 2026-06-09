@@ -9,33 +9,38 @@
  * instead of a runtime rejection from Meta.
  */
 
-const META_API_VERSION = 'v21.0'
-const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`
+import type { TemplateButtonParameter, TemplateHeaderInput } from '@/types';
+
+const META_API_VERSION = 'v21.0';
+const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`;
 
 export interface MetaSendResult {
-  messageId: string
+  messageId: string;
 }
 
 export interface MetaPhoneInfo {
-  id: string
-  display_phone_number: string
-  verified_name?: string
-  quality_rating?: string
+  id: string;
+  display_phone_number: string;
+  verified_name?: string;
+  quality_rating?: string;
 }
 
 interface MetaErrorResponse {
-  error?: { message?: string; code?: number; type?: string }
+  error?: { message?: string; code?: number; type?: string };
 }
 
-async function throwMetaError(response: Response, fallback: string): Promise<never> {
-  let message = fallback
+async function throwMetaError(
+  response: Response,
+  fallback: string
+): Promise<never> {
+  let message = fallback;
   try {
-    const data = (await response.json()) as MetaErrorResponse
-    if (data.error?.message) message = data.error.message
+    const data = (await response.json()) as MetaErrorResponse;
+    if (data.error?.message) message = data.error.message;
   } catch {
     // response body wasn't JSON — keep the fallback
   }
-  throw new Error(message)
+  throw new Error(message);
 }
 
 // ============================================================
@@ -43,8 +48,8 @@ async function throwMetaError(response: Response, fallback: string): Promise<nev
 // ============================================================
 
 export interface VerifyPhoneNumberArgs {
-  phoneNumberId: string
-  accessToken: string
+  phoneNumberId: string;
+  accessToken: string;
 }
 
 /**
@@ -54,15 +59,15 @@ export interface VerifyPhoneNumberArgs {
 export async function verifyPhoneNumber(
   args: VerifyPhoneNumberArgs
 ): Promise<MetaPhoneInfo> {
-  const { phoneNumberId, accessToken } = args
-  const url = `${META_API_BASE}/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating`
+  const { phoneNumberId, accessToken } = args;
+  const url = `${META_API_BASE}/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating`;
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
-  })
+  });
   if (!response.ok) {
-    await throwMetaError(response, `Meta API error: ${response.status}`)
+    await throwMetaError(response, `Meta API error: ${response.status}`);
   }
-  return response.json()
+  return response.json();
 }
 
 // ============================================================
@@ -70,13 +75,13 @@ export async function verifyPhoneNumber(
 // ============================================================
 
 export interface SendTextMessageArgs {
-  phoneNumberId: string
-  accessToken: string
-  to: string
-  text: string
+  phoneNumberId: string;
+  accessToken: string;
+  to: string;
+  text: string;
   /** Meta's message_id of the message being replied to. Adds a `context` field
    *  so WhatsApp renders the new message as a reply with a quote preview. */
-  contextMessageId?: string
+  contextMessageId?: string;
 }
 
 /**
@@ -86,17 +91,17 @@ export interface SendTextMessageArgs {
 export async function sendTextMessage(
   args: SendTextMessageArgs
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, text, contextMessageId } = args
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const { phoneNumberId, accessToken, to, text, contextMessageId } = args;
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`;
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
     to,
     type: 'text',
     text: { body: text },
-  }
+  };
   if (contextMessageId) {
-    body.context = { message_id: contextMessageId }
+    body.context = { message_id: contextMessageId };
   }
   const response = await fetch(url, {
     method: 'POST',
@@ -105,23 +110,33 @@ export async function sendTextMessage(
       Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(body),
-  })
+  });
   if (!response.ok) {
-    await throwMetaError(response, `Meta API error: ${response.status}`)
+    await throwMetaError(response, `Meta API error: ${response.status}`);
   }
-  const data = await response.json()
-  return { messageId: data.messages[0].id }
+  const data = await response.json();
+  return { messageId: data.messages[0].id };
 }
 
 export interface SendTemplateMessageArgs {
-  phoneNumberId: string
-  accessToken: string
-  to: string
-  templateName: string
-  language?: string
-  params?: string[]
+  phoneNumberId: string;
+  accessToken: string;
+  to: string;
+  templateName: string;
+  language?: string;
+  params?: string[];
+  /**
+   * Optional template header parameter. Required by Meta when the
+   * approved template has a media header (image/video/document).
+   */
+  header?: TemplateHeaderInput | null;
+  /**
+   * Optional button parameters for templates with dynamic URL suffixes
+   * or custom quick-reply payloads.
+   */
+  buttonParams?: TemplateButtonParameter[];
   /** Meta's message_id of the message being replied to. */
-  contextMessageId?: string
+  contextMessageId?: string;
 }
 
 /**
@@ -138,22 +153,34 @@ export async function sendTemplateMessage(
     templateName,
     language = 'en_US',
     params,
+    header,
+    buttonParams,
     contextMessageId,
-  } = args
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  } = args;
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`;
 
   const template: Record<string, unknown> = {
     name: templateName,
     language: { code: language },
-  }
+  };
+
+  const components: Record<string, unknown>[] = [];
+  const headerComponent = buildTemplateHeaderComponent(header);
+  if (headerComponent) components.push(headerComponent);
 
   if (params && params.length > 0) {
-    template.components = [
-      {
-        type: 'body',
-        parameters: params.map((p) => ({ type: 'text', text: String(p) })),
-      },
-    ]
+    components.push({
+      type: 'body',
+      parameters: params.map((p) => ({ type: 'text', text: String(p) })),
+    });
+  }
+
+  if (buttonParams && buttonParams.length > 0) {
+    components.push(...buttonParams.map(buildTemplateButtonComponent));
+  }
+
+  if (components.length > 0) {
+    template.components = components;
   }
 
   const body: Record<string, unknown> = {
@@ -162,9 +189,9 @@ export async function sendTemplateMessage(
     to,
     type: 'template',
     template,
-  }
+  };
   if (contextMessageId) {
-    body.context = { message_id: contextMessageId }
+    body.context = { message_id: contextMessageId };
   }
 
   const response = await fetch(url, {
@@ -174,12 +201,109 @@ export async function sendTemplateMessage(
       Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(body),
-  })
+  });
   if (!response.ok) {
-    await throwMetaError(response, `Meta API error: ${response.status}`)
+    await throwMetaError(response, `Meta API error: ${response.status}`);
   }
-  const data = await response.json()
-  return { messageId: data.messages[0].id }
+  const data = await response.json();
+  return { messageId: data.messages[0].id };
+}
+
+function buildTemplateHeaderComponent(
+  header: TemplateHeaderInput | null | undefined
+): Record<string, unknown> | null {
+  if (!header) return null;
+
+  if (header.type === 'text') {
+    const text = header.text ?? header.value ?? '';
+    if (!text.trim()) throw new Error('Template text header requires text');
+    return {
+      type: 'header',
+      parameters: [{ type: 'text', text }],
+    };
+  }
+
+  const mediaUrl = header.media_url ?? header.mediaUrl;
+  const mediaId = header.media_id ?? header.mediaId;
+  if (!mediaUrl && !mediaId) {
+    throw new Error(
+      `Template ${header.type} header requires media_url or media_id`
+    );
+  }
+
+  const media: Record<string, string> = {};
+  if (mediaId) {
+    media.id = mediaId;
+  } else if (mediaUrl) {
+    assertHttpUrl(mediaUrl, `Template ${header.type} header media_url`);
+    media.link = mediaUrl;
+  }
+  if (header.type === 'document') {
+    const filename =
+      normalizeDocumentFilename(header.filename) ||
+      inferDocumentFilename(mediaUrl);
+    if (filename) media.filename = filename;
+  }
+
+  return {
+    type: 'header',
+    parameters: [{ type: header.type, [header.type]: media }],
+  };
+}
+
+function normalizeDocumentFilename(value: string | undefined): string {
+  return value?.trim().replace(/[\\/]/g, '') ?? '';
+}
+
+function inferDocumentFilename(mediaUrl: string | undefined): string {
+  if (!mediaUrl) return '';
+  try {
+    const url = new URL(mediaUrl);
+    const lastSegment = url.pathname.split('/').filter(Boolean).pop();
+    return normalizeDocumentFilename(
+      lastSegment ? decodeURIComponent(lastSegment) : undefined
+    );
+  } catch {
+    return '';
+  }
+}
+
+function buildTemplateButtonComponent(
+  button: TemplateButtonParameter
+): Record<string, unknown> {
+  if (button.type === 'url') {
+    if (!button.text.trim()) {
+      throw new Error('Template URL button requires text');
+    }
+    return {
+      type: 'button',
+      sub_type: 'url',
+      index: String(button.index),
+      parameters: [{ type: 'text', text: button.text }],
+    };
+  }
+
+  if (!button.payload.trim()) {
+    throw new Error('Template quick-reply button requires payload');
+  }
+  return {
+    type: 'button',
+    sub_type: 'quick_reply',
+    index: String(button.index),
+    parameters: [{ type: 'payload', payload: button.payload }],
+  };
+}
+
+function assertHttpUrl(value: string, fieldName: string) {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${fieldName} must be a valid URL`);
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error(`${fieldName} must be an http(s) URL`);
+  }
 }
 
 // ============================================================
@@ -187,13 +311,13 @@ export async function sendTemplateMessage(
 // ============================================================
 
 export interface SendReactionMessageArgs {
-  phoneNumberId: string
-  accessToken: string
-  to: string
+  phoneNumberId: string;
+  accessToken: string;
+  to: string;
   /** Meta's message_id of the message being reacted to. */
-  targetMessageId: string
+  targetMessageId: string;
   /** Single emoji, or empty string to remove an existing reaction. */
-  emoji: string
+  emoji: string;
 }
 
 /**
@@ -203,8 +327,8 @@ export interface SendReactionMessageArgs {
 export async function sendReactionMessage(
   args: SendReactionMessageArgs
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, targetMessageId, emoji } = args
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const { phoneNumberId, accessToken, to, targetMessageId, emoji } = args;
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`;
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -218,12 +342,12 @@ export async function sendReactionMessage(
       type: 'reaction',
       reaction: { message_id: targetMessageId, emoji },
     }),
-  })
+  });
   if (!response.ok) {
-    await throwMetaError(response, `Meta API error: ${response.status}`)
+    await throwMetaError(response, `Meta API error: ${response.status}`);
   }
-  const data = await response.json()
-  return { messageId: data.messages[0].id }
+  const data = await response.json();
+  return { messageId: data.messages[0].id };
 }
 
 // ============================================================
@@ -253,29 +377,29 @@ export const INTERACTIVE_LIMITS = {
   bodyMaxLength: 1024,
   footerMaxLength: 60,
   headerTextMaxLength: 60,
-} as const
+} as const;
 
 export interface InteractiveButton {
   /** Stable id sent back in the webhook when tapped (≤ 256 chars). */
-  id: string
+  id: string;
   /** Visible label (≤ 20 chars per Meta). */
-  title: string
+  title: string;
 }
 
 export interface SendInteractiveButtonsArgs {
-  phoneNumberId: string
-  accessToken: string
-  to: string
+  phoneNumberId: string;
+  accessToken: string;
+  to: string;
   /** The body text — what the customer reads above the buttons. */
-  bodyText: string
+  bodyText: string;
   /** Optional plain-text header (≤ 60 chars). */
-  headerText?: string
+  headerText?: string;
   /** Optional grey footer line under the buttons (≤ 60 chars). */
-  footerText?: string
+  footerText?: string;
   /** 1–3 buttons. Validated against Meta's limits before sending. */
-  buttons: InteractiveButton[]
+  buttons: InteractiveButton[];
   /** Meta's message_id of the message being replied to (quote preview). */
-  contextMessageId?: string
+  contextMessageId?: string;
 }
 
 /**
@@ -290,23 +414,30 @@ export async function sendInteractiveButtons(
   args: SendInteractiveButtonsArgs
 ): Promise<MetaSendResult> {
   const {
-    phoneNumberId, accessToken, to,
-    bodyText, headerText, footerText, buttons, contextMessageId,
-  } = args
-  validateInteractiveBody(bodyText)
-  validateInteractiveHeaderFooter(headerText, footerText)
+    phoneNumberId,
+    accessToken,
+    to,
+    bodyText,
+    headerText,
+    footerText,
+    buttons,
+    contextMessageId,
+  } = args;
+  validateInteractiveBody(bodyText);
+  validateInteractiveHeaderFooter(headerText, footerText);
   if (buttons.length < 1 || buttons.length > INTERACTIVE_LIMITS.maxButtons) {
     throw new Error(
       `Interactive button message requires 1-${INTERACTIVE_LIMITS.maxButtons} buttons (got ${buttons.length}).`
-    )
+    );
   }
   for (const btn of buttons) {
-    if (!btn.id) throw new Error('Interactive button missing id.')
-    if (!btn.title) throw new Error(`Interactive button "${btn.id}" missing title.`)
+    if (!btn.id) throw new Error('Interactive button missing id.');
+    if (!btn.title)
+      throw new Error(`Interactive button "${btn.id}" missing title.`);
     if (btn.title.length > INTERACTIVE_LIMITS.buttonTitleMaxLength) {
       throw new Error(
         `Interactive button title "${btn.title}" exceeds ${INTERACTIVE_LIMITS.buttonTitleMaxLength} chars.`
-      )
+      );
     }
   }
 
@@ -319,9 +450,9 @@ export async function sendInteractiveButtons(
         reply: { id: b.id, title: b.title },
       })),
     },
-  }
-  if (headerText) interactive.header = { type: 'text', text: headerText }
-  if (footerText) interactive.footer = { text: footerText }
+  };
+  if (headerText) interactive.header = { type: 'text', text: headerText };
+  if (footerText) interactive.footer = { text: footerText };
 
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
@@ -329,10 +460,10 @@ export async function sendInteractiveButtons(
     to,
     type: 'interactive',
     interactive,
-  }
-  if (contextMessageId) body.context = { message_id: contextMessageId }
+  };
+  if (contextMessageId) body.context = { message_id: contextMessageId };
 
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`;
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -340,44 +471,44 @@ export async function sendInteractiveButtons(
       Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(body),
-  })
+  });
   if (!response.ok) {
-    await throwMetaError(response, `Meta API error: ${response.status}`)
+    await throwMetaError(response, `Meta API error: ${response.status}`);
   }
-  const data = await response.json()
-  return { messageId: data.messages[0].id }
+  const data = await response.json();
+  return { messageId: data.messages[0].id };
 }
 
 export interface InteractiveListRow {
   /** Stable id sent back in the webhook when tapped (≤ 200 chars). */
-  id: string
+  id: string;
   /** Visible row title (≤ 24 chars per Meta). */
-  title: string
+  title: string;
   /** Optional secondary line shown under the title (≤ 72 chars). */
-  description?: string
+  description?: string;
 }
 
 export interface InteractiveListSection {
   /** Optional section header shown above its rows. */
-  title?: string
-  rows: InteractiveListRow[]
+  title?: string;
+  rows: InteractiveListRow[];
 }
 
 export interface SendInteractiveListArgs {
-  phoneNumberId: string
-  accessToken: string
-  to: string
-  bodyText: string
+  phoneNumberId: string;
+  accessToken: string;
+  to: string;
+  bodyText: string;
   /** Label of the tap-to-expand button on the message bubble. */
-  buttonLabel: string
-  headerText?: string
-  footerText?: string
+  buttonLabel: string;
+  headerText?: string;
+  footerText?: string;
   /**
    * 1–10 rows TOTAL across all sections. Meta caps the *total*, not
    * per-section. Validation enforces this before send.
    */
-  sections: InteractiveListSection[]
-  contextMessageId?: string
+  sections: InteractiveListSection[];
+  contextMessageId?: string;
 }
 
 /**
@@ -390,41 +521,52 @@ export async function sendInteractiveList(
   args: SendInteractiveListArgs
 ): Promise<MetaSendResult> {
   const {
-    phoneNumberId, accessToken, to,
-    bodyText, buttonLabel, headerText, footerText, sections, contextMessageId,
-  } = args
-  validateInteractiveBody(bodyText)
-  validateInteractiveHeaderFooter(headerText, footerText)
-  if (!buttonLabel) throw new Error('Interactive list requires a buttonLabel.')
+    phoneNumberId,
+    accessToken,
+    to,
+    bodyText,
+    buttonLabel,
+    headerText,
+    footerText,
+    sections,
+    contextMessageId,
+  } = args;
+  validateInteractiveBody(bodyText);
+  validateInteractiveHeaderFooter(headerText, footerText);
+  if (!buttonLabel) throw new Error('Interactive list requires a buttonLabel.');
   if (buttonLabel.length > INTERACTIVE_LIMITS.buttonTitleMaxLength) {
     throw new Error(
       `Interactive list buttonLabel "${buttonLabel}" exceeds ${INTERACTIVE_LIMITS.buttonTitleMaxLength} chars.`
-    )
+    );
   }
-  if (sections.length < 1 || sections.length > INTERACTIVE_LIMITS.maxListSections) {
+  if (
+    sections.length < 1 ||
+    sections.length > INTERACTIVE_LIMITS.maxListSections
+  ) {
     throw new Error(
       `Interactive list requires 1-${INTERACTIVE_LIMITS.maxListSections} sections (got ${sections.length}).`
-    )
+    );
   }
-  const totalRows = sections.reduce((sum, s) => sum + s.rows.length, 0)
+  const totalRows = sections.reduce((sum, s) => sum + s.rows.length, 0);
   if (totalRows < 1 || totalRows > INTERACTIVE_LIMITS.maxListRowsTotal) {
     throw new Error(
       `Interactive list requires 1-${INTERACTIVE_LIMITS.maxListRowsTotal} rows total across all sections (got ${totalRows}).`
-    )
+    );
   }
-  const seenIds = new Set<string>()
+  const seenIds = new Set<string>();
   for (const section of sections) {
     for (const row of section.rows) {
-      if (!row.id) throw new Error('Interactive list row missing id.')
+      if (!row.id) throw new Error('Interactive list row missing id.');
       if (seenIds.has(row.id)) {
-        throw new Error(`Interactive list has duplicate row id "${row.id}".`)
+        throw new Error(`Interactive list has duplicate row id "${row.id}".`);
       }
-      seenIds.add(row.id)
-      if (!row.title) throw new Error(`Interactive list row "${row.id}" missing title.`)
+      seenIds.add(row.id);
+      if (!row.title)
+        throw new Error(`Interactive list row "${row.id}" missing title.`);
       if (row.title.length > INTERACTIVE_LIMITS.listRowTitleMaxLength) {
         throw new Error(
           `Interactive list row title "${row.title}" exceeds ${INTERACTIVE_LIMITS.listRowTitleMaxLength} chars.`
-        )
+        );
       }
       if (
         row.description &&
@@ -432,7 +574,7 @@ export async function sendInteractiveList(
       ) {
         throw new Error(
           `Interactive list row description for "${row.id}" exceeds ${INTERACTIVE_LIMITS.listRowDescriptionMaxLength} chars.`
-        )
+        );
       }
     }
   }
@@ -451,9 +593,9 @@ export async function sendInteractiveList(
         })),
       })),
     },
-  }
-  if (headerText) interactive.header = { type: 'text', text: headerText }
-  if (footerText) interactive.footer = { text: footerText }
+  };
+  if (headerText) interactive.header = { type: 'text', text: headerText };
+  if (footerText) interactive.footer = { text: footerText };
 
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
@@ -461,10 +603,10 @@ export async function sendInteractiveList(
     to,
     type: 'interactive',
     interactive,
-  }
-  if (contextMessageId) body.context = { message_id: contextMessageId }
+  };
+  if (contextMessageId) body.context = { message_id: contextMessageId };
 
-  const url = `${META_API_BASE}/${phoneNumberId}/messages`
+  const url = `${META_API_BASE}/${phoneNumberId}/messages`;
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -472,36 +614,39 @@ export async function sendInteractiveList(
       Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(body),
-  })
+  });
   if (!response.ok) {
-    await throwMetaError(response, `Meta API error: ${response.status}`)
+    await throwMetaError(response, `Meta API error: ${response.status}`);
   }
-  const data = await response.json()
-  return { messageId: data.messages[0].id }
+  const data = await response.json();
+  return { messageId: data.messages[0].id };
 }
 
 function validateInteractiveBody(bodyText: string): void {
-  if (!bodyText) throw new Error('Interactive message requires bodyText.')
+  if (!bodyText) throw new Error('Interactive message requires bodyText.');
   if (bodyText.length > INTERACTIVE_LIMITS.bodyMaxLength) {
     throw new Error(
       `Interactive bodyText exceeds ${INTERACTIVE_LIMITS.bodyMaxLength} chars.`
-    )
+    );
   }
 }
 
 function validateInteractiveHeaderFooter(
   headerText: string | undefined,
-  footerText: string | undefined,
+  footerText: string | undefined
 ): void {
-  if (headerText && headerText.length > INTERACTIVE_LIMITS.headerTextMaxLength) {
+  if (
+    headerText &&
+    headerText.length > INTERACTIVE_LIMITS.headerTextMaxLength
+  ) {
     throw new Error(
       `Interactive headerText exceeds ${INTERACTIVE_LIMITS.headerTextMaxLength} chars.`
-    )
+    );
   }
   if (footerText && footerText.length > INTERACTIVE_LIMITS.footerMaxLength) {
     throw new Error(
       `Interactive footerText exceeds ${INTERACTIVE_LIMITS.footerMaxLength} chars.`
-    )
+    );
   }
 }
 
@@ -510,8 +655,8 @@ function validateInteractiveHeaderFooter(
 // ============================================================
 
 export interface GetMediaUrlArgs {
-  mediaId: string
-  accessToken: string
+  mediaId: string;
+  accessToken: string;
 }
 
 /**
@@ -521,21 +666,24 @@ export interface GetMediaUrlArgs {
 export async function getMediaUrl(
   args: GetMediaUrlArgs
 ): Promise<{ url: string; mimeType: string }> {
-  const { mediaId, accessToken } = args
+  const { mediaId, accessToken } = args;
   const response = await fetch(`${META_API_BASE}/${mediaId}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
-  })
+  });
   if (!response.ok) {
-    await throwMetaError(response, `Media fetch failed: ${response.status}`)
+    await throwMetaError(response, `Media fetch failed: ${response.status}`);
   }
-  const data = await response.json()
-  if (!data.url) throw new Error('Media URL not found in Meta response')
-  return { url: data.url, mimeType: data.mime_type || 'application/octet-stream' }
+  const data = await response.json();
+  if (!data.url) throw new Error('Media URL not found in Meta response');
+  return {
+    url: data.url,
+    mimeType: data.mime_type || 'application/octet-stream',
+  };
 }
 
 export interface DownloadMediaArgs {
-  downloadUrl: string
-  accessToken: string
+  downloadUrl: string;
+  accessToken: string;
 }
 
 /**
@@ -545,15 +693,15 @@ export interface DownloadMediaArgs {
 export async function downloadMedia(
   args: DownloadMediaArgs
 ): Promise<{ buffer: Buffer; contentType: string }> {
-  const { downloadUrl, accessToken } = args
+  const { downloadUrl, accessToken } = args;
   const response = await fetch(downloadUrl, {
     headers: { Authorization: `Bearer ${accessToken}` },
-  })
+  });
   if (!response.ok) {
-    throw new Error(`Media download failed: ${response.status}`)
+    throw new Error(`Media download failed: ${response.status}`);
   }
   const contentType =
-    response.headers.get('content-type') || 'application/octet-stream'
-  const buffer = Buffer.from(await response.arrayBuffer())
-  return { buffer, contentType }
+    response.headers.get('content-type') || 'application/octet-stream';
+  const buffer = Buffer.from(await response.arrayBuffer());
+  return { buffer, contentType };
 }

@@ -14,12 +14,26 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { ArrowLeft, Send, Loader2, Users, Save } from 'lucide-react';
+import {
+  AlertCircle,
+  ArrowLeft,
+  Send,
+  Loader2,
+  Users,
+  Save,
+} from 'lucide-react';
 
 interface AudienceConfig {
-  type: string;
+  type: 'all' | 'contacts' | 'tags' | 'custom_field' | 'csv';
+  contactIds?: string[];
   tagIds?: string[];
+  customField?: {
+    fieldId: string;
+    operator: 'is' | 'is_not' | 'contains';
+    value: string;
+  };
   csvContacts?: { phone: string; name?: string }[];
+  excludeTagIds?: string[];
 }
 
 interface Step4Props {
@@ -55,23 +69,73 @@ export function Step4ScheduleSend({
       try {
         const supabase = createClient();
 
+        let baseIds: Set<string> | null = null;
+
         if (audience.type === 'all') {
-          const { count } = await supabase
-            .from('contacts')
-            .select('*', { count: 'exact', head: true });
-          setEstimatedReach(count ?? 0);
-        } else if (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) {
+          // Handled below so tag exclusions can be subtracted.
+        } else if (
+          audience.type === 'contacts' &&
+          audience.contactIds &&
+          audience.contactIds.length > 0
+        ) {
+          baseIds = new Set(audience.contactIds);
+        } else if (
+          audience.type === 'tags' &&
+          audience.tagIds &&
+          audience.tagIds.length > 0
+        ) {
           const { data: contactTags } = await supabase
             .from('contact_tags')
             .select('contact_id')
             .in('tag_id', audience.tagIds);
 
-          const uniqueIds = new Set((contactTags ?? []).map((ct) => ct.contact_id));
-          setEstimatedReach(uniqueIds.size);
+          baseIds = new Set((contactTags ?? []).map((ct) => ct.contact_id));
+        } else if (
+          audience.type === 'custom_field' &&
+          audience.customField?.fieldId &&
+          audience.customField.value
+        ) {
+          const { fieldId, operator, value } = audience.customField;
+          let query = supabase
+            .from('contact_custom_values')
+            .select('contact_id')
+            .eq('custom_field_id', fieldId);
+
+          if (operator === 'is') query = query.eq('value', value);
+          else if (operator === 'is_not') query = query.neq('value', value);
+          else query = query.ilike('value', `%${value}%`);
+
+          const { data } = await query;
+          baseIds = new Set((data ?? []).map((row) => row.contact_id));
         } else if (audience.type === 'csv' && audience.csvContacts) {
           setEstimatedReach(audience.csvContacts.length);
+          return;
         } else {
           setEstimatedReach(0);
+          return;
+        }
+
+        let excludeSet: Set<string> | null = null;
+        if (audience.excludeTagIds && audience.excludeTagIds.length > 0) {
+          const { data: excludeRows } = await supabase
+            .from('contact_tags')
+            .select('contact_id')
+            .in('tag_id', audience.excludeTagIds);
+          excludeSet = new Set((excludeRows ?? []).map((r) => r.contact_id));
+        }
+
+        if (baseIds) {
+          setEstimatedReach(
+            [...baseIds].filter((id) => !excludeSet?.has(id)).length
+          );
+        } else {
+          const { count } = await supabase
+            .from('contacts')
+            .select('*', { count: 'exact', head: true });
+          const total = count ?? 0;
+          setEstimatedReach(
+            excludeSet ? Math.max(0, total - excludeSet.size) : total
+          );
         }
       } finally {
         setLoadingReach(false);
@@ -84,11 +148,14 @@ export function Step4ScheduleSend({
   const audienceLabel =
     audience.type === 'all'
       ? 'All Contacts'
-      : audience.type === 'tags'
-        ? `Tags (${audience.tagIds?.length ?? 0} selected)`
-        : audience.type === 'csv'
-          ? 'CSV Upload'
-          : 'Custom';
+      : audience.type === 'contacts'
+        ? `Selected Contacts (${audience.contactIds?.length ?? 0})`
+        : audience.type === 'tags'
+          ? `Tags (${audience.tagIds?.length ?? 0} selected)`
+          : audience.type === 'csv'
+            ? 'CSV Upload'
+            : 'Custom Field';
+  const isMarketingTemplate = template.category === 'Marketing';
 
   return (
     <div className="space-y-6">
@@ -101,7 +168,9 @@ export function Step4ScheduleSend({
 
       {/* Broadcast Name */}
       <div>
-        <label className="mb-1.5 block text-sm font-medium text-white">Broadcast Name</label>
+        <label className="mb-1.5 block text-sm font-medium text-white">
+          Broadcast Name
+        </label>
         <Input
           value={name}
           onChange={(e) => onNameChange(e.target.value)}
@@ -111,7 +180,7 @@ export function Step4ScheduleSend({
       </div>
 
       {/* Summary Card */}
-      <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 space-y-3">
+      <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/50 p-4">
         <p className="text-sm font-medium text-white">Summary</p>
         <div className="grid grid-cols-2 gap-3 text-sm">
           <div>
@@ -126,11 +195,13 @@ export function Step4ScheduleSend({
             <p className="text-xs text-slate-400">Estimated Reach</p>
             <div className="flex items-center gap-1.5">
               {loadingReach ? (
-                <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                <Loader2 className="text-primary h-3 w-3 animate-spin" />
               ) : (
                 <>
-                  <Users className="h-3.5 w-3.5 text-primary" />
-                  <p className="font-medium text-white">{estimatedReach.toLocaleString()}</p>
+                  <Users className="text-primary h-3.5 w-3.5" />
+                  <p className="font-medium text-white">
+                    {estimatedReach.toLocaleString()}
+                  </p>
                 </>
               )}
             </div>
@@ -142,19 +213,42 @@ export function Step4ScheduleSend({
         </div>
       </div>
 
+      {isMarketingTemplate && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+          <div className="flex gap-3">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-amber-200">
+                Marketing delivery can be limited by WhatsApp
+              </p>
+              <p className="text-xs leading-5 text-amber-100/80">
+                Error #131049 means Meta chose not to deliver to those
+                recipients to protect engagement. Reduce broad cold sends,
+                target contacts who opted in or replied recently, and avoid
+                retrying the same failed numbers immediately.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Processing overlay */}
       {isProcessing && (
-        <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
+        <div className="border-primary/20 bg-primary/5 rounded-xl border p-4">
           <div className="mb-2 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin text-primary" />
-              <p className="text-sm font-medium text-white">Sending broadcast...</p>
+              <Loader2 className="text-primary h-4 w-4 animate-spin" />
+              <p className="text-sm font-medium text-white">
+                Sending broadcast...
+              </p>
             </div>
-            <span className="text-xs font-medium text-primary">{progress}%</span>
+            <span className="text-primary text-xs font-medium">
+              {progress}%
+            </span>
           </div>
           <div className="h-1.5 w-full rounded-full bg-slate-800">
             <div
-              className="h-1.5 rounded-full bg-primary transition-all duration-300"
+              className="bg-primary h-1.5 rounded-full transition-all duration-300"
               style={{ width: `${progress}%` }}
             />
           </div>
@@ -186,49 +280,55 @@ export function Step4ScheduleSend({
           )}
 
           <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
-          <DialogTrigger
-            render={
-              <Button
-                disabled={!name.trim() || isProcessing}
-                className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-              />
-            }
-          >
-            <Send className="h-4 w-4" />
-            Send Broadcast
-          </DialogTrigger>
-          <DialogContent className="border-slate-700 bg-slate-900 sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle className="text-white">Confirm Broadcast</DialogTitle>
-              <DialogDescription className="text-slate-400">
-                You are about to send this broadcast to{' '}
-                <span className="font-medium text-white">{estimatedReach.toLocaleString()}</span>{' '}
-                contacts using the{' '}
-                <span className="font-medium text-white">{template.name}</span> template.
-                This action cannot be undone.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button
-                variant="outline"
-                onClick={() => setShowConfirm(false)}
-                className="border-slate-700 text-slate-300"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={() => {
-                  setShowConfirm(false);
-                  onSend();
-                }}
-                className="bg-primary text-primary-foreground hover:bg-primary/90"
-              >
-                <Send className="h-4 w-4" />
-                Confirm & Send
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            <DialogTrigger
+              render={
+                <Button
+                  disabled={!name.trim() || isProcessing}
+                  className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                />
+              }
+            >
+              <Send className="h-4 w-4" />
+              Send Broadcast
+            </DialogTrigger>
+            <DialogContent className="border-slate-700 bg-slate-900 sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle className="text-white">
+                  Confirm Broadcast
+                </DialogTitle>
+                <DialogDescription className="text-slate-400">
+                  You are about to send this broadcast to{' '}
+                  <span className="font-medium text-white">
+                    {estimatedReach.toLocaleString()}
+                  </span>{' '}
+                  contacts using the{' '}
+                  <span className="font-medium text-white">
+                    {template.name}
+                  </span>{' '}
+                  template. This action cannot be undone.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowConfirm(false)}
+                  className="border-slate-700 text-slate-300"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => {
+                    setShowConfirm(false);
+                    onSend();
+                  }}
+                  className="bg-primary text-primary-foreground hover:bg-primary/90"
+                >
+                  <Send className="h-4 w-4" />
+                  Confirm & Send
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
     </div>

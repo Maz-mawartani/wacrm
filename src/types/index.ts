@@ -93,7 +93,12 @@ export type ContentType =
   | 'template'
   /** Customer tapped a reply button or list row on a message we sent. */
   | 'interactive';
-export type MessageStatus = 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
+export type MessageStatus =
+  | 'sending'
+  | 'sent'
+  | 'delivered'
+  | 'read'
+  | 'failed';
 
 export interface Message {
   id: string;
@@ -150,10 +155,47 @@ export interface MessageTemplate {
   header_content?: string;
   body_text: string;
   footer_text?: string;
-  buttons?: Record<string, unknown>[];
+  buttons?: MessageTemplateButton[];
   status?: 'Draft' | 'Pending' | 'Approved' | 'Rejected';
   created_at: string;
 }
+
+export interface MessageTemplateButton {
+  type?: string;
+  text?: string;
+  url?: string;
+  phone_number?: string;
+  example?: string[] | string;
+}
+
+export type TemplateHeaderMediaType = 'image' | 'video' | 'document';
+
+export type TemplateHeaderInput =
+  | {
+      type: 'text';
+      text?: string;
+      value?: string;
+    }
+  | {
+      type: TemplateHeaderMediaType;
+      media_url?: string;
+      mediaUrl?: string;
+      media_id?: string;
+      mediaId?: string;
+      filename?: string;
+    };
+
+export type TemplateButtonParameter =
+  | {
+      type: 'url';
+      index: number | string;
+      text: string;
+    }
+  | {
+      type: 'quick_reply';
+      index: number | string;
+      payload: string;
+    };
 
 export interface Pipeline {
   id: string;
@@ -198,8 +240,19 @@ export interface Deal {
   assignee?: Profile;
 }
 
-export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed';
-export type RecipientStatus = 'pending' | 'sent' | 'delivered' | 'read' | 'replied' | 'failed';
+export type BroadcastStatus =
+  | 'draft'
+  | 'scheduled'
+  | 'sending'
+  | 'sent'
+  | 'failed';
+export type RecipientStatus =
+  | 'pending'
+  | 'sent'
+  | 'delivered'
+  | 'read'
+  | 'replied'
+  | 'failed';
 
 export interface Broadcast {
   id: string;
@@ -208,6 +261,8 @@ export interface Broadcast {
   template_name: string;
   template_language: string;
   template_variables?: Record<string, unknown>;
+  template_header?: TemplateHeaderInput | null;
+  template_buttons?: TemplateButtonParameter[] | null;
   audience_filter?: Record<string, unknown>;
   scheduled_at?: string;
   status: BroadcastStatus;
