@@ -1,4 +1,7 @@
 import type { NextConfig } from "next";
+import createNextIntlPlugin from "next-intl/plugin";
+
+const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
 /**
  * Baseline security headers applied to every response.
@@ -25,8 +28,12 @@ const SECURITY_HEADERS = [
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   {
+    // Microphone is allowed for same-origin (`self`) so the inbox
+    // composer can record voice notes via MediaRecorder. Everything
+    // else stays denied — a compromised dependency can't silently grab
+    // the camera / geolocation / etc.
     key: "Permissions-Policy",
-    value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+    value: "camera=(), microphone=(self), geolocation=(), payment=(), usb=()",
   },
   {
     key: "Content-Security-Policy-Report-Only",
@@ -42,6 +49,9 @@ const SECURITY_HEADERS = [
       // https URLs paste-able from the UI), OG images, data URLs for
       // tiny inline assets.
       "img-src 'self' data: blob: https:",
+      // Outbound media previews (blob: from MediaRecorder + file picker)
+      // and Supabase public-bucket audio/video the inbox renders.
+      "media-src 'self' blob: https://*.supabase.co",
       "font-src 'self' data:",
       // Supabase REST + realtime (WSS). All Meta API calls happen
       // server-side, so graph.facebook.com does not belong here.
@@ -54,6 +64,39 @@ const SECURITY_HEADERS = [
 ] as const;
 
 const nextConfig: NextConfig = {
+  // Emit a self-contained server bundle (.next/standalone) so the
+  // Docker image can run without node_modules or the Next CLI.
+  // Harmless outside Docker: `next start` keeps working as before.
+  output: "standalone",
+
+  /**
+   * Cross-origin dev access (Next.js 16).
+   *
+   * Next 16 blocks requests to dev-only resources (`/_next/*` internals,
+   * the HMR websocket, the dev overlay) unless the browser's Origin is
+   * the host the dev server booted on — `localhost` by default. Tunnels
+   * like ngrok serve the app from a public HTTPS host, so without
+   * allow-listing that host those dev requests come back 403: HMR stops
+   * working and the dev session degrades over the tunnel (issue #365).
+   *
+   * Wildcards match subdomains only (Next's CSRF matcher), so the
+   * randomised tunnel subdomain is covered. Add any other host via
+   * `ALLOWED_DEV_ORIGINS` (comma-separated). This key is dev-only and
+   * has no effect on a production build.
+   */
+  allowedDevOrigins: [
+    "*.ngrok-free.app",
+    "*.ngrok.app",
+    "*.ngrok.io",
+    "*.trycloudflare.com",
+    "*.loca.lt",
+    ...(process.env.ALLOWED_DEV_ORIGINS
+      ? process.env.ALLOWED_DEV_ORIGINS.split(",")
+          .map((origin) => origin.trim())
+          .filter(Boolean)
+      : []),
+  ],
+
   /**
    * Cache-Control policy.
    *
@@ -67,9 +110,9 @@ const nextConfig: NextConfig = {
    *   did nothing because the cache is server-side.
    *
    * Strategy:
-   *   - /_next/static/* — immutable for a year. Filenames are
-   *     content-hashed, so a new build produces new filenames; the
-   *     old ones are safe to keep indefinitely in caches.
+   *   - /_next/static/* — leave to Next. Turbopack dev chunks can go
+   *     stale if we force immutable caching here; Next already emits
+   *     the correct production headers for hashed assets.
    *   - /api/*          — no-store. API responses are per-user and
    *     must never be shared across requests at the edge.
    *   - Everything else — public, brief s-maxage + generous
@@ -94,20 +137,11 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
-        source: "/_next/static/:path*",
-        headers: [
-          {
-            key: "Cache-Control",
-            value: "public, max-age=31536000, immutable",
-          },
-        ],
-      },
-      {
         source: "/api/:path*",
         headers: [{ key: "Cache-Control", value: "no-store" }],
       },
       {
-        source: "/:path*",
+        source: "/:path((?!_next/static|_next/image|api).*)",
         headers: [
           {
             key: "Cache-Control",
@@ -127,4 +161,4 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withNextIntl(nextConfig);

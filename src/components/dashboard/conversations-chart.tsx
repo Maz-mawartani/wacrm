@@ -27,7 +27,10 @@ const VB_W = 760
 const VB_H = 240
 const PADDING = { top: 16, right: 16, bottom: 28, left: 40 }
 
+import { useTranslations } from 'next-intl'
+
 export function ConversationsChart({ series, loading, range, onRangeChange }: ConversationsChartProps) {
+  const t = useTranslations('Dashboard.conversationsChart')
   const data = series[range]
 
   // Memoise the max so per-day hover math doesn't recompute it.
@@ -46,13 +49,13 @@ export function ConversationsChart({ series, loading, range, onRangeChange }: Co
   }, [data])
 
   return (
-    <section className="flex h-full flex-col rounded-xl border border-slate-800 bg-slate-900">
-      <header className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+    <section className="flex h-full flex-col rounded-xl border border-border bg-card">
+      <header className="flex items-center justify-between border-b border-border px-5 py-4">
         <div>
-          <h2 className="text-sm font-semibold text-white">Conversations Over Time</h2>
-          <p className="mt-0.5 text-xs text-slate-500">Daily message volume by direction</p>
+          <h2 className="text-sm font-semibold text-foreground">{t('title')}</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">{t('description')}</p>
         </div>
-        <div className="flex items-center gap-1 rounded-lg bg-slate-800/60 p-1">
+        <div className="flex items-center gap-1 rounded-lg bg-muted/60 p-1">
           {[7, 30, 90].map((r) => (
             <button
               key={r}
@@ -61,11 +64,11 @@ export function ConversationsChart({ series, loading, range, onRangeChange }: Co
               className={cn(
                 'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
                 range === r
-                  ? 'bg-slate-700 text-white'
-                  : 'text-slate-400 hover:text-white',
+                  ? 'bg-secondary text-secondary-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
               )}
             >
-              {r} days
+              {t('days', { count: r })}
             </button>
           ))}
         </div>
@@ -77,17 +80,17 @@ export function ConversationsChart({ series, loading, range, onRangeChange }: Co
         ) : data.every((p) => p.incoming === 0 && p.outgoing === 0) ? (
           <EmptyState
             icon={MessageSquare}
-            title="No message activity in this range"
-            hint="Send or receive messages to start populating this chart."
+            title={t('noActivity')}
+            hint={t('noActivityHint')}
           />
         ) : (
-          <LineSvg data={data} maxY={maxY} ticks={niceTicks} />
+          <LineSvg data={data} maxY={maxY} ticks={niceTicks} t={t} />
         )}
       </div>
 
-      <footer className="flex items-center gap-4 border-t border-slate-800 px-5 py-3 text-xs text-slate-400">
-        <LegendDot color="#3b82f6" label="Incoming" />
-        <LegendDot color="#7c3aed" label="Outgoing" />
+      <footer className="flex items-center gap-4 border-t border-border px-5 py-3 text-xs text-muted-foreground">
+        <LegendDot color="#3b82f6" label={t('incoming')} />
+        <LegendDot color="#7c3aed" label={t('outgoing')} />
       </footer>
     </section>
   )
@@ -101,10 +104,12 @@ function LineSvg({
   data,
   maxY,
   ticks,
+  t
 }: {
   data: ConversationsSeriesPoint[]
   maxY: number
   ticks: number[]
+  t: ReturnType<typeof useTranslations>
 }) {
   // Hover state: both the snapped index AND the tooltip's pixel
   // offset inside the wrapper div. They're stored together so the
@@ -195,7 +200,7 @@ function LineSvg({
         viewBox={`0 0 ${VB_W} ${VB_H}`}
         className="h-[240px] w-full"
         role="img"
-        aria-label="Conversations per day"
+        aria-label={t('ariaLabel')}
       >
         {/* Y-axis gridlines + labels */}
         {ticks.map((t) => {
@@ -207,7 +212,7 @@ function LineSvg({
                 x2={VB_W - PADDING.right}
                 y1={y}
                 y2={y}
-                stroke="rgb(30 41 59)"
+                stroke="var(--border)"
                 strokeDasharray="3 3"
               />
               <text
@@ -215,7 +220,7 @@ function LineSvg({
                 y={y}
                 textAnchor="end"
                 dominantBaseline="middle"
-                className="fill-slate-500 text-[10px]"
+                className="fill-muted-foreground text-[10px]"
               >
                 {t}
               </text>
@@ -231,7 +236,7 @@ function LineSvg({
               x={xFor(i)}
               y={VB_H - 8}
               textAnchor="middle"
-              className="fill-slate-500 text-[10px]"
+              className="fill-muted-foreground text-[10px]"
             >
               {shortDayLabel(p.day)}
             </text>
@@ -265,7 +270,7 @@ function LineSvg({
               x2={hoverX}
               y1={PADDING.top}
               y2={PADDING.top + chartH}
-              stroke="rgb(71 85 105)"
+              stroke="var(--muted-foreground)"
               strokeDasharray="3 3"
             />
             <circle cx={hoverX} cy={yFor(data[hover.idx].incoming)} r={3.5} fill="#3b82f6" />
@@ -280,18 +285,18 @@ function LineSvg({
           letterboxed viewBox percentage. */}
       {hovered && hover !== null && (
         <div
-          className="pointer-events-none absolute top-0 z-10 -translate-x-1/2 rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-[11px] shadow-lg"
+          className="pointer-events-none absolute top-0 z-10 -translate-x-1/2 rounded-md border border-border bg-popover px-2.5 py-1.5 text-[11px] shadow-lg"
           style={{ left: `${hover.tooltipLeftPx}px` }}
         >
-          <div className="font-medium text-white">{longDayLabel(hovered.day)}</div>
+          <div className="font-medium text-popover-foreground">{longDayLabel(hovered.day)}</div>
           <div className="mt-1 flex flex-col gap-0.5">
             <span className="flex items-center gap-1.5 text-blue-300">
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
-              {hovered.incoming} incoming
+              {t('tooltipIncoming', { count: hovered.incoming })}
             </span>
             <span className="flex items-center gap-1.5 text-primary">
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary" />
-              {hovered.outgoing} outgoing
+              {t('tooltipOutgoing', { count: hovered.outgoing })}
             </span>
           </div>
         </div>

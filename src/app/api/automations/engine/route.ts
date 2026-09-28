@@ -1,19 +1,23 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import type { AutomationTriggerType } from '@/types'
 
 /**
  * Manual trigger for testing or for external integrations that want
- * to fire automations. Auth is required — the caller's user_id is
- * used so RLS-safe data remains per-user.
+ * to fire automations. Auth is required — we resolve the caller's
+ * account_id and dispatch over the account's automations.
  */
 export async function POST(request: Request) {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  // Firing automations sends outbound WhatsApp — a write action. Require
+  // at least `agent`; a viewer must not be able to trigger sends.
+  let accountId: string
+  try {
+    const ctx = await requireRole('agent')
+    accountId = ctx.accountId
+  } catch (err) {
+    return toErrorResponse(err)
+  }
 
   const body = await request.json().catch(() => null)
   if (!body?.trigger_type) {
@@ -21,7 +25,7 @@ export async function POST(request: Request) {
   }
 
   await runAutomationsForTrigger({
-    userId: user.id,
+    accountId,
     triggerType: body.trigger_type as AutomationTriggerType,
     contactId: body.contact_id ?? null,
     context: body.context ?? {},

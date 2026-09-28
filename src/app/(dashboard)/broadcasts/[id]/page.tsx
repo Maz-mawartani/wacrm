@@ -8,8 +8,6 @@ import {
   BroadcastRecipient,
   MessageTemplate,
   RecipientStatus,
-  TemplateButtonParameter,
-  TemplateHeaderInput,
 } from '@/types';
 import {
   useBroadcastSending,
@@ -44,10 +42,15 @@ import {
   Download,
   ChevronDown,
   Trash2,
-  RefreshCw,
+  PlayCircle,
+  RotateCcw,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { getBroadcastStatus, getRecipientStatus } from '@/lib/broadcast-status';
+import {
+  getBroadcastStatus,
+  getRecipientStatus,
+} from '@/lib/broadcast-status';
+import { useTranslations } from 'next-intl';
 
 interface StatCardProps {
   label: string;
@@ -60,19 +63,15 @@ interface StatCardProps {
 function StatCard({ label, value, total, icon, color }: StatCardProps) {
   const pct = total > 0 ? Math.round((value / total) * 100) : 0;
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+    <div className="rounded-xl border border-border bg-card p-4">
       <div className="flex items-center justify-between">
-        <div
-          className={`flex h-8 w-8 items-center justify-center rounded-lg ${color}`}
-        >
+        <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${color}`}>
           {icon}
         </div>
-        <span className="text-xs text-slate-500">{pct}%</span>
+        <span className="text-xs text-muted-foreground">{pct}%</span>
       </div>
-      <p className="mt-3 text-2xl font-bold text-white">
-        {value.toLocaleString()}
-      </p>
-      <p className="text-xs text-slate-400">{label}</p>
+      <p className="mt-3 text-2xl font-bold text-foreground">{value.toLocaleString()}</p>
+      <p className="text-xs text-muted-foreground">{label}</p>
     </div>
   );
 }
@@ -83,12 +82,6 @@ interface FunnelStep {
   color: string;
 }
 
-interface FailureCategory {
-  key: string;
-  label: string;
-  classes: string;
-}
-
 /**
  * Pure-CSS funnel chart: decreasing-width rounded bars.
  * Width is relative to the largest step (typically Sent) so we
@@ -97,8 +90,8 @@ interface FailureCategory {
 function FunnelChart({ steps }: { steps: FunnelStep[] }) {
   const max = Math.max(...steps.map((s) => s.value), 1);
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-      <h3 className="mb-4 text-sm font-medium text-white">Funnel</h3>
+    <div className="rounded-xl border border-border bg-card p-4">
+      <h3 className="mb-4 text-sm font-medium text-foreground">Funnel</h3>
       <div className="space-y-2">
         {steps.map((step) => {
           const pctOfMax = Math.max(5, Math.round((step.value / max) * 100));
@@ -108,17 +101,19 @@ function FunnelChart({ steps }: { steps: FunnelStep[] }) {
               : 0;
           return (
             <div key={step.label} className="flex items-center gap-3">
-              <span className="w-20 shrink-0 text-xs text-slate-400">
+              <span className="w-20 shrink-0 text-xs text-muted-foreground">
                 {step.label}
               </span>
-              <div className="relative h-7 flex-1 rounded-full bg-slate-800">
+              <div className="relative h-7 flex-1 rounded-full bg-muted">
                 <div
                   className={`h-7 rounded-full ${step.color} transition-[width] duration-500`}
                   style={{ width: `${pctOfMax}%` }}
                 />
-                <span className="absolute inset-0 flex items-center px-3 text-xs font-medium text-white">
+                <span className="absolute inset-0 flex items-center px-3 text-xs font-medium text-foreground">
                   {step.value.toLocaleString()}
-                  <span className="ml-2 text-slate-300/80">({pctOfSent}%)</span>
+                  <span className="ml-2 text-muted-foreground/80">
+                    ({pctOfSent}%)
+                  </span>
                 </span>
               </div>
             </div>
@@ -137,6 +132,33 @@ const RECIPIENT_STATUSES: readonly RecipientStatus[] = [
   'replied',
   'failed',
 ];
+
+/**
+ * CSV export helper — RFC 4180 quoting. Quote every field so
+ * commas/newlines/quotes round-trip cleanly.
+ */
+function toCsv(rows: string[][]): string {
+  const escape = (v: string) => `"${v.replace(/"/g, '""')}"`;
+  return rows.map((r) => r.map(escape).join(',')).join('\n');
+}
+
+function downloadBlob(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+interface FailureCategory {
+  key: string;
+  label: string;
+  classes: string;
+}
 
 const failureCategories = {
   ecosystem_health: {
@@ -162,30 +184,9 @@ const failureCategories = {
   other: {
     key: 'other',
     label: 'Other',
-    classes: 'bg-slate-500/10 text-slate-300 border-slate-500/20',
+    classes: 'bg-muted text-muted-foreground border-border',
   },
 } satisfies Record<string, FailureCategory>;
-
-/**
- * CSV export helper — RFC 4180 quoting. Quote every field so
- * commas/newlines/quotes round-trip cleanly.
- */
-function toCsv(rows: string[][]): string {
-  const escape = (v: string) => `"${v.replace(/"/g, '""')}"`;
-  return rows.map((r) => r.map(escape).join(',')).join('\n');
-}
-
-function downloadBlob(filename: string, content: string) {
-  const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
 
 function isHealthyEcosystemError(message: string | null | undefined): boolean {
   if (!message) return false;
@@ -196,8 +197,10 @@ function isHealthyEcosystemError(message: string | null | undefined): boolean {
   );
 }
 
+/** Groups a recipient's raw Meta error text into a small set of actionable
+ * buckets — the "Failure reasons" breakdown below is the point of this. */
 function getFailureCategory(
-  message: string | null | undefined
+  message: string | null | undefined,
 ): FailureCategory {
   if (!message) return failureCategories.other;
   const normalized = message.toLowerCase();
@@ -232,6 +235,9 @@ function getFailureCategory(
   return failureCategories.other;
 }
 
+/** A recipient Meta accepted (has a message id) but that later got a
+ * status webhook overwritten to 'pending' with no error — rare, but
+ * worth surfacing separately from a genuine send failure. */
 function getRecipientDisplayStatus(recipient: BroadcastRecipient) {
   if (recipient.status === 'pending' && recipient.whatsapp_message_id) {
     return {
@@ -239,7 +245,6 @@ function getRecipientDisplayStatus(recipient: BroadcastRecipient) {
       classes: 'bg-sky-500/10 text-sky-400 border-sky-500/20',
     };
   }
-
   return getRecipientStatus(recipient.status);
 }
 
@@ -258,78 +263,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function normalizeStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const strings = value.filter(
-    (item): item is string => typeof item === 'string'
+    (item): item is string => typeof item === 'string',
   );
   return strings.length > 0 ? strings : undefined;
 }
 
-function normalizeVariableMappings(
-  value: unknown
-): Record<string, VariableMapping> {
-  if (!isRecord(value)) return {};
-
-  const variables: Record<string, VariableMapping> = {};
-  for (const [key, rawMapping] of Object.entries(value)) {
-    if (!isRecord(rawMapping)) continue;
-    const { type, value: mappingValue } = rawMapping;
-    if (
-      (type === 'static' || type === 'field' || type === 'custom_field') &&
-      typeof mappingValue === 'string'
-    ) {
-      variables[key] = { type, value: mappingValue };
-    }
-  }
-  return variables;
-}
-
-function normalizeTemplateHeader(value: unknown): TemplateHeaderInput | null {
-  if (!isRecord(value)) return null;
-  if (value.type === 'text') {
-    return {
-      type: 'text',
-      text: typeof value.text === 'string' ? value.text : undefined,
-      value: typeof value.value === 'string' ? value.value : undefined,
-    };
-  }
-  if (
-    value.type === 'image' ||
-    value.type === 'video' ||
-    value.type === 'document'
-  ) {
-    return {
-      type: value.type,
-      media_url:
-        typeof value.media_url === 'string' ? value.media_url : undefined,
-      mediaUrl: typeof value.mediaUrl === 'string' ? value.mediaUrl : undefined,
-      media_id: typeof value.media_id === 'string' ? value.media_id : undefined,
-      mediaId: typeof value.mediaId === 'string' ? value.mediaId : undefined,
-      filename: typeof value.filename === 'string' ? value.filename : undefined,
-    };
-  }
-  return null;
-}
-
-function normalizeTemplateButtons(value: unknown): TemplateButtonParameter[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is TemplateButtonParameter => {
-    if (!isRecord(item)) return false;
-    if (
-      item.type === 'url' &&
-      (typeof item.index === 'string' || typeof item.index === 'number') &&
-      typeof item.text === 'string'
-    ) {
-      return true;
-    }
-    return (
-      item.type === 'quick_reply' &&
-      (typeof item.index === 'string' || typeof item.index === 'number') &&
-      typeof item.payload === 'string'
-    );
-  });
-}
-
 function normalizeCsvContacts(
-  value: unknown
+  value: unknown,
 ): { phone: string; name?: string }[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const rows = value
@@ -338,10 +278,12 @@ function normalizeCsvContacts(
       phone: typeof row.phone === 'string' ? row.phone : '',
       name: typeof row.name === 'string' ? row.name : undefined,
     }))
-    .filter((row) => row.phone);
+    .filter((row) => row.phone.length > 0);
   return rows.length > 0 ? rows : undefined;
 }
 
+/** Reconstructs the wizard's AudienceConfig from the JSONB column a
+ * draft was saved with, so "Send Now" doesn't need the wizard's UI. */
 function normalizeAudienceConfig(value: unknown): AudienceConfig | null {
   if (!isRecord(value)) return null;
 
@@ -386,6 +328,28 @@ function normalizeAudienceConfig(value: unknown): AudienceConfig | null {
   return null;
 }
 
+function normalizeVariableMappings(
+  value: unknown,
+): Record<string, VariableMapping> {
+  if (!isRecord(value)) return {};
+
+  const variables: Record<string, VariableMapping> = {};
+  for (const [key, rawMapping] of Object.entries(value)) {
+    if (!isRecord(rawMapping)) continue;
+    const { type, value: mappingValue } = rawMapping;
+    if (
+      (type === 'static' || type === 'field' || type === 'custom_field') &&
+      typeof mappingValue === 'string'
+    ) {
+      variables[key] = { type, value: mappingValue };
+    }
+  }
+  return variables;
+}
+
+/** A minimal MessageTemplate stub — enough for createAndSendBroadcast to
+ * key off name/language. The server resolves the real row for headers,
+ * buttons and body text; this client-side object is never rendered. */
 function buildDraftTemplate(broadcast: Broadcast): MessageTemplate {
   return {
     id: broadcast.template_name,
@@ -401,6 +365,8 @@ function buildDraftTemplate(broadcast: Broadcast): MessageTemplate {
 export default function BroadcastDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const t = useTranslations('Broadcasts.detail');
+  const tStatus = useTranslations('Broadcasts.status');
   const broadcastId = params.id as string;
   const {
     createAndSendBroadcast,
@@ -413,50 +379,49 @@ export default function BroadcastDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<RecipientStatus | 'all'>(
-    'all'
+    'all',
   );
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [resumingScope, setResumingScope] = useState<
+    'pending' | 'failed' | null
+  >(null);
 
-  const fetchData = useCallback(
-    async (showSpinner = true) => {
-      if (showSpinner) setLoading(true);
-      setError(null);
+  const fetchData = useCallback(async () => {
+    try {
+      const supabase = createClient();
 
-      try {
-        const supabase = createClient();
-        const { data: bc, error: bcError } = await supabase
-          .from('broadcasts')
-          .select('*')
-          .eq('id', broadcastId)
-          .single();
+      const { data: bc, error: bcError } = await supabase
+        .from('broadcasts')
+        .select('*')
+        .eq('id', broadcastId)
+        .single();
 
-        if (bcError) throw bcError;
-        setBroadcast(bc);
+      if (bcError) throw bcError;
+      setBroadcast(bc);
 
-        const { data: recs, error: recsError } = await supabase
-          .from('broadcast_recipients')
-          .select('*, contact:contacts(*)')
-          .eq('broadcast_id', broadcastId)
-          .order('created_at', { ascending: false });
+      const { data: recs, error: recsError } = await supabase
+        .from('broadcast_recipients')
+        .select('*, contact:contacts(*)')
+        .eq('broadcast_id', broadcastId)
+        .order('created_at', { ascending: false });
 
-        if (recsError) throw recsError;
-        setRecipients(recs ?? []);
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : 'Failed to load broadcast'
-        );
-      } finally {
-        setLoading(false);
-      }
-    },
-    [broadcastId]
-  );
+      if (recsError) throw recsError;
+      setRecipients(recs ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('notFound'));
+    } finally {
+      setLoading(false);
+    }
+  }, [broadcastId, t]);
 
   useEffect(() => {
-    void fetchData();
+    fetchData();
   }, [fetchData]);
 
+  // Live-update the counters and recipient rows while a broadcast is
+  // sending (or being resumed server-side) — without this the page only
+  // reflects reality on a manual refresh.
   useEffect(() => {
     const supabase = createClient();
     const channel = supabase
@@ -471,7 +436,7 @@ export default function BroadcastDetailPage() {
         },
         (payload) => {
           setBroadcast(payload.new as Broadcast);
-        }
+        },
       )
       .on(
         'postgres_changes',
@@ -487,10 +452,10 @@ export default function BroadcastDetailPage() {
             current.map((recipient) =>
               recipient.id === next.id
                 ? { ...recipient, ...next, contact: recipient.contact }
-                : recipient
-            )
+                : recipient,
+            ),
           );
-        }
+        },
       )
       .on(
         'postgres_changes',
@@ -503,9 +468,9 @@ export default function BroadcastDetailPage() {
         (payload) => {
           const oldRow = payload.old as Partial<BroadcastRecipient>;
           setRecipients((current) =>
-            current.filter((recipient) => recipient.id !== oldRow.id)
+            current.filter((recipient) => recipient.id !== oldRow.id),
           );
-        }
+        },
       )
       .subscribe();
 
@@ -519,37 +484,35 @@ export default function BroadcastDetailPage() {
       statusFilter === 'all'
         ? recipients
         : recipients.filter((r) => r.status === statusFilter),
-    [recipients, statusFilter]
+    [recipients, statusFilter],
   );
   const healthyEcosystemFailures = useMemo(
     () =>
       recipients.filter((recipient) =>
-        isHealthyEcosystemError(recipient.error_message)
+        isHealthyEcosystemError(recipient.error_message),
       ).length,
-    [recipients]
+    [recipients],
   );
   const acceptedByMetaCount = useMemo(
-    () =>
-      recipients.filter((recipient) => recipient.whatsapp_message_id).length,
-    [recipients]
+    () => recipients.filter((recipient) => recipient.whatsapp_message_id).length,
+    [recipients],
   );
   const failedRecipients = useMemo(
     () =>
       recipients.filter(
-        (recipient) => recipient.status === 'failed' || recipient.error_message
+        (recipient) => recipient.status === 'failed' || recipient.error_message,
       ),
-    [recipients]
+    [recipients],
   );
   const noStatusRecipients = useMemo(
     () => recipients.filter(hasNoStatusAfterAcceptance),
-    [recipients]
+    [recipients],
   );
   const failureSummary = useMemo(() => {
     const byCategory = new Map<
       string,
       { category: FailureCategory; count: number }
     >();
-
     for (const recipient of failedRecipients) {
       const category = getFailureCategory(recipient.error_message);
       const current = byCategory.get(category.key);
@@ -558,38 +521,8 @@ export default function BroadcastDetailPage() {
         count: (current?.count ?? 0) + 1,
       });
     }
-
     return [...byCategory.values()].sort((a, b) => b.count - a.count);
   }, [failedRecipients]);
-
-  function handleExport() {
-    if (!broadcast) return;
-    const header = [
-      'Contact',
-      'Phone',
-      'Status',
-      'Sent At',
-      'Delivered At',
-      'Read At',
-      'Replied At',
-      'Error',
-    ];
-    const rows = recipients.map((r) => [
-      r.contact?.name ?? '',
-      r.contact?.phone ?? '',
-      getRecipientDisplayStatus(r).label,
-      r.sent_at ?? '',
-      r.delivered_at ?? '',
-      r.read_at ?? '',
-      r.replied_at ?? '',
-      r.error_message ?? '',
-    ]);
-    const csv = toCsv([header, ...rows]);
-    const safeName = broadcast.name
-      .replace(/[^a-z0-9-_]+/gi, '-')
-      .toLowerCase();
-    downloadBlob(`broadcast-${safeName}-${broadcastId.slice(0, 8)}.csv`, csv);
-  }
 
   function handleExportFailed() {
     if (!broadcast) return;
@@ -614,12 +547,10 @@ export default function BroadcastDetailPage() {
       r.error_message ?? '',
     ]);
     const csv = toCsv([header, ...rows]);
-    const safeName = broadcast.name
-      .replace(/[^a-z0-9-_]+/gi, '-')
-      .toLowerCase();
+    const safeName = broadcast.name.replace(/[^a-z0-9-_]+/gi, '-').toLowerCase();
     downloadBlob(
       `broadcast-${safeName}-${broadcastId.slice(0, 8)}-failed.csv`,
-      csv
+      csv,
     );
   }
 
@@ -644,12 +575,10 @@ export default function BroadcastDetailPage() {
       r.read_at ?? '',
     ]);
     const csv = toCsv([header, ...rows]);
-    const safeName = broadcast.name
-      .replace(/[^a-z0-9-_]+/gi, '-')
-      .toLowerCase();
+    const safeName = broadcast.name.replace(/[^a-z0-9-_]+/gi, '-').toLowerCase();
     downloadBlob(
       `broadcast-${safeName}-${broadcastId.slice(0, 8)}-no-status.csv`,
-      csv
+      csv,
     );
   }
 
@@ -659,7 +588,7 @@ export default function BroadcastDetailPage() {
     const audience = normalizeAudienceConfig(broadcast.audience_filter);
     if (!audience) {
       toast.error(
-        'This draft is missing a sendable audience. Create a new broadcast or save a new draft.'
+        'This draft is missing a sendable audience. Create a new broadcast or save a new draft.',
       );
       return;
     }
@@ -671,15 +600,87 @@ export default function BroadcastDetailPage() {
         template: buildDraftTemplate(broadcast),
         audience,
         variables: normalizeVariableMappings(broadcast.template_variables),
-        header: normalizeTemplateHeader(broadcast.template_header),
-        buttonParams: normalizeTemplateButtons(broadcast.template_buttons),
       });
       toast.success('Draft broadcast sent');
-      await fetchData(false);
+      await fetchData();
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Failed to send draft broadcast';
       toast.error(message);
+    }
+  }
+
+  function handleExport() {
+    if (!broadcast) return;
+    const header = [
+      t('table.contact'),
+      t('table.phone'),
+      t('table.status'),
+      t('table.sent'),
+      t('table.delivered'),
+      t('table.read'),
+      t('table.error'),
+    ];
+    const rows = recipients.map((r) => [
+      r.contact?.name ?? '',
+      r.contact?.phone ?? '',
+      r.status,
+      r.sent_at ?? '',
+      r.delivered_at ?? '',
+      r.read_at ?? '',
+      r.error_message ?? '',
+    ]);
+    const csv = toCsv([header, ...rows]);
+    const safeName = broadcast.name.replace(/[^a-z0-9-_]+/gi, '-').toLowerCase();
+    downloadBlob(`broadcast-${safeName}-${broadcastId.slice(0, 8)}.csv`, csv);
+  }
+
+  /**
+   * Hand the leftovers to the server (issue #472).
+   *
+   * The wizard's send loop lives in the tab that started the campaign,
+   * so navigating away strands the rest as 'pending' with the broadcast
+   * stuck 'sending'. This is the recovery, and the same call retries
+   * failed recipients.
+   */
+  async function handleResume(scope: 'pending' | 'failed') {
+    setResumingScope(scope);
+    try {
+      const res = await fetch(`/api/whatsapp/broadcast/${broadcastId}/resume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope }),
+      });
+      const payload = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        toast.error(
+          t('toastResumeFailed', {
+            error: payload?.error || `HTTP ${res.status}`,
+          }),
+        );
+        return;
+      }
+
+      toast.success(
+        payload.remaining > 0
+          ? t('toastResumeStartedCapped', {
+              count: payload.resuming,
+              remaining: payload.remaining,
+            })
+          : t('toastResumeStarted', { count: payload.resuming }),
+      );
+      // Delivery runs server-side after the 202, so the counts here are
+      // a snapshot — reload to pick up the first of it.
+      await fetchData();
+    } catch (err) {
+      toast.error(
+        t('toastResumeFailed', {
+          error: err instanceof Error ? err.message : 'Unknown error',
+        }),
+      );
+    } finally {
+      setResumingScope(null);
     }
   }
 
@@ -696,17 +697,17 @@ export default function BroadcastDetailPage() {
       .eq('id', broadcastId);
     setDeleting(false);
     if (delErr) {
-      toast.error(`Failed to delete: ${delErr.message}`);
+      toast.error(t('toastFailedDelete', { error: delErr.message }));
       return;
     }
-    toast.success('Broadcast deleted');
+    toast.success(t('toastDeleted'));
     router.push('/broadcasts');
   }
 
   if (loading) {
     return (
       <div className="flex h-64 items-center justify-center">
-        <Loader2 className="text-primary h-6 w-6 animate-spin" />
+        <Loader2 className="h-6 w-6 animate-spin text-primary" />
       </div>
     );
   }
@@ -714,9 +715,9 @@ export default function BroadcastDetailPage() {
   if (error || !broadcast) {
     return (
       <div className="flex h-64 flex-col items-center justify-center gap-2">
-        <p className="text-sm text-red-400">{error ?? 'Broadcast not found'}</p>
+        <p className="text-sm text-red-400">{error ?? t('notFound')}</p>
         <Button variant="outline" onClick={() => router.push('/broadcasts')}>
-          Back to Broadcasts
+          {t('backToBroadcasts')}
         </Button>
       </div>
     );
@@ -724,19 +725,18 @@ export default function BroadcastDetailPage() {
 
   const status = getBroadcastStatus(broadcast.status);
 
+  const pendingCount = recipients.filter((r) => r.status === 'pending').length;
+  const retryableCount = recipients.filter((r) => r.status === 'failed').length;
+  // A campaign whose tab went away sits in 'sending' with recipients
+  // still pending and nothing left to move them. Name that state rather
+  // than leaving a permanently pulsing "sending" badge.
+  const isStalled = broadcast.status === 'sending' && pendingCount > 0;
+
   const funnelSteps: FunnelStep[] = [
-    { label: 'Sent', value: broadcast.sent_count, color: 'bg-primary' },
-    {
-      label: 'Delivered',
-      value: broadcast.delivered_count,
-      color: 'bg-teal-500',
-    },
-    { label: 'Read', value: broadcast.read_count, color: 'bg-blue-500' },
-    {
-      label: 'Replied',
-      value: broadcast.replied_count,
-      color: 'bg-indigo-500',
-    },
+    { label: t('stats.sent'), value: broadcast.sent_count, color: 'bg-primary' },
+    { label: t('stats.delivered'), value: broadcast.delivered_count, color: 'bg-teal-500' },
+    { label: t('stats.read'), value: broadcast.read_count, color: 'bg-blue-500' },
+    { label: t('stats.replied'), value: broadcast.replied_count, color: 'bg-indigo-500' },
   ];
 
   return (
@@ -748,26 +748,24 @@ export default function BroadcastDetailPage() {
             variant="outline"
             size="icon"
             onClick={() => router.push('/broadcasts')}
-            className="border-slate-700"
+            className="border-border"
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-white">
-                {broadcast.name}
-              </h1>
+              <h1 className="text-2xl font-bold text-foreground">{broadcast.name}</h1>
               <span
                 className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${status.classes}`}
               >
-                {status.label}
+                {tStatus(status.label)}
               </span>
             </div>
-            <div className="mt-1 flex items-center gap-3 text-sm text-slate-400">
-              <span>Template: {broadcast.template_name}</span>
+            <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+              <span>{t('template', { name: broadcast.template_name })}</span>
               <span>-</span>
               <span>
-                Created {new Date(broadcast.created_at).toLocaleDateString()}
+                {t('createdAt', { date: new Date(broadcast.created_at).toLocaleDateString() })}
               </span>
             </div>
           </div>
@@ -783,7 +781,6 @@ export default function BroadcastDetailPage() {
               size="sm"
               onClick={() => void handleSendDraft()}
               disabled={isSendingDraft}
-              className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
               {isSendingDraft ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -794,27 +791,17 @@ export default function BroadcastDetailPage() {
             </Button>
           )}
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void fetchData(false)}
-            className="border-slate-700 bg-transparent text-slate-300 hover:bg-slate-800"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
-          </Button>
-
           {confirmDelete ? (
             <div className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm">
-              <span className="text-red-300">Delete this broadcast?</span>
+              <span className="text-red-300">{t('deletePrompt')}</span>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => setConfirmDelete(false)}
                 disabled={deleting}
-                className="h-7 border-slate-700 bg-transparent text-slate-300 hover:bg-slate-800"
+                className="h-7 border-border bg-transparent text-muted-foreground hover:bg-muted"
               >
-                Cancel
+                {t('cancel')}
               </Button>
               <Button
                 size="sm"
@@ -822,7 +809,7 @@ export default function BroadcastDetailPage() {
                 disabled={deleting}
                 className="h-7 bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
               >
-                {deleting ? 'Deleting…' : 'Confirm'}
+                {deleting ? t('deleting') : t('confirm')}
               </Button>
             </div>
           ) : (
@@ -833,84 +820,85 @@ export default function BroadcastDetailPage() {
               onClick={() => setConfirmDelete(true)}
               title={
                 broadcast.status === 'sending'
-                  ? 'Cannot delete while a broadcast is actively sending'
-                  : 'Delete this broadcast'
+                  ? t('cannotDeleteSending')
+                  : t('deleteHover')
               }
               className="border-red-500/30 bg-transparent text-red-400 hover:bg-red-500/10 disabled:opacity-40"
             >
               <Trash2 className="h-3.5 w-3.5" />
-              Delete
+              {t('delete')}
             </Button>
           )}
         </div>
       </div>
 
-      {/* Stats — 6 cards: Total / Sent / Delivered / Read / Replied / Failed */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <StatCard
-          label="Total Recipients"
-          value={broadcast.total_recipients}
-          total={broadcast.total_recipients}
-          icon={<Users className="h-4 w-4" />}
-          color="bg-slate-800 text-slate-300"
-        />
-        <StatCard
-          label="Sent"
-          value={broadcast.sent_count}
-          total={broadcast.total_recipients}
-          icon={<Send className="h-4 w-4" />}
-          color="bg-primary/10 text-primary"
-        />
-        <StatCard
-          label="Delivered"
-          value={broadcast.delivered_count}
-          total={broadcast.total_recipients}
-          icon={<CheckCheck className="h-4 w-4" />}
-          color="bg-teal-500/10 text-teal-400"
-        />
-        <StatCard
-          label="Read"
-          value={broadcast.read_count}
-          total={broadcast.total_recipients}
-          icon={<Eye className="h-4 w-4" />}
-          color="bg-blue-500/10 text-blue-400"
-        />
-        <StatCard
-          label="Replied"
-          value={broadcast.replied_count}
-          total={broadcast.total_recipients}
-          icon={<MessageCircle className="h-4 w-4" />}
-          color="bg-indigo-500/10 text-indigo-400"
-        />
-        <StatCard
-          label="Failed"
-          value={broadcast.failed_count}
-          total={broadcast.total_recipients}
-          icon={<AlertCircle className="h-4 w-4" />}
-          color="bg-red-500/10 text-red-400"
-        />
-      </div>
-
-      <FunnelChart steps={funnelSteps} />
-
       {isSendingDraft && (
-        <div className="border-primary/20 bg-primary/5 rounded-xl border p-4">
+        <div className="rounded-xl border border-border bg-card p-4">
           <div className="mb-2 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Loader2 className="text-primary h-4 w-4 animate-spin" />
-              <p className="text-sm font-medium text-white">
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              <p className="text-sm font-medium text-foreground">
                 Sending draft broadcast...
               </p>
             </div>
-            <span className="text-primary text-xs font-medium">
+            <span className="text-xs font-medium text-primary">
               {draftProgress}%
             </span>
           </div>
-          <div className="h-1.5 w-full rounded-full bg-slate-800">
+          <div className="h-1.5 w-full rounded-full bg-muted">
             <div
-              className="bg-primary h-1.5 rounded-full transition-all duration-300"
+              className="h-1.5 rounded-full bg-primary transition-all duration-300"
               style={{ width: `${draftProgress}%` }}
             />
+          </div>
+        </div>
+      )}
+
+      {/* Resume / retry (issue #472). Only rendered when there is
+          actually something outstanding. */}
+      {(pendingCount > 0 || retryableCount > 0) && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
+          <div className="text-sm">
+            <p className="font-medium text-foreground">
+              {isStalled ? t('resumeStalledTitle') : t('resumeTitle')}
+            </p>
+            <p className="mt-0.5 text-muted-foreground">
+              {isStalled
+                ? t('resumeStalledHint', { count: pendingCount })
+                : t('resumeHint', { count: retryableCount })}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {pendingCount > 0 && (
+              <Button
+                size="sm"
+                onClick={() => handleResume('pending')}
+                disabled={resumingScope !== null}
+              >
+                {resumingScope === 'pending' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <PlayCircle className="h-3.5 w-3.5" />
+                )}
+                {t('resumePending', { count: pendingCount })}
+              </Button>
+            )}
+            {retryableCount > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleResume('failed')}
+                disabled={resumingScope !== null}
+                className="border-border text-muted-foreground hover:bg-muted"
+              >
+                {resumingScope === 'failed' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="h-3.5 w-3.5" />
+                )}
+                {t('retryFailed', { count: retryableCount })}
+              </Button>
+            )}
           </div>
         </div>
       )}
@@ -937,14 +925,16 @@ export default function BroadcastDetailPage() {
       )}
 
       {failureSummary.length > 0 && (
-        <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <div className="rounded-xl border border-border bg-card p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-medium text-white">Failure reasons</h3>
+            <h3 className="text-sm font-medium text-foreground">
+              Failure reasons
+            </h3>
             <Button
               variant="outline"
               size="sm"
               onClick={handleExportFailed}
-              className="border-slate-700 text-slate-300 hover:bg-slate-800"
+              className="border-border text-muted-foreground hover:bg-muted"
             >
               <Download className="h-3.5 w-3.5" />
               Export failed CSV
@@ -954,14 +944,14 @@ export default function BroadcastDetailPage() {
             {failureSummary.map(({ category, count }) => (
               <div
                 key={category.key}
-                className="rounded-lg border border-slate-800 bg-slate-950/40 p-3"
+                className="rounded-lg border border-border bg-muted/40 p-3"
               >
                 <span
                   className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${category.classes}`}
                 >
                   {category.label}
                 </span>
-                <p className="mt-2 text-2xl font-bold text-white">
+                <p className="mt-2 text-2xl font-bold text-foreground">
                   {count.toLocaleString()}
                 </p>
               </div>
@@ -980,12 +970,13 @@ export default function BroadcastDetailPage() {
               <p className="mt-1 text-xs leading-5 text-sky-100/75">
                 Meta accepted these sends and returned message ids, but the app
                 has not received a later sent, delivered, read, or failed
-                webhook for them. They are the best candidate list for aggregate
-                Insights failures that were not captured per recipient.
+                webhook for them. They are the best candidate list for
+                aggregate Insights failures that were not captured per
+                recipient.
               </p>
             </div>
             <div className="flex items-center gap-3">
-              <span className="text-2xl font-bold text-white">
+              <span className="text-2xl font-bold text-foreground">
                 {noStatusRecipients.length.toLocaleString()}
               </span>
               <Button
@@ -1002,15 +993,64 @@ export default function BroadcastDetailPage() {
         </div>
       )}
 
+      {/* Stats — 6 cards: Total / Sent / Delivered / Read / Replied / Failed */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <StatCard
+          label={t('stats.totalRecipients')}
+          value={broadcast.total_recipients}
+          total={broadcast.total_recipients}
+          icon={<Users className="h-4 w-4" />}
+          color="bg-muted text-muted-foreground"
+        />
+        <StatCard
+          label={t('stats.sent')}
+          value={broadcast.sent_count}
+          total={broadcast.total_recipients}
+          icon={<Send className="h-4 w-4" />}
+          color="bg-primary/10 text-primary"
+        />
+        <StatCard
+          label={t('stats.delivered')}
+          value={broadcast.delivered_count}
+          total={broadcast.total_recipients}
+          icon={<CheckCheck className="h-4 w-4" />}
+          color="bg-teal-500/10 text-teal-400"
+        />
+        <StatCard
+          label={t('stats.read')}
+          value={broadcast.read_count}
+          total={broadcast.total_recipients}
+          icon={<Eye className="h-4 w-4" />}
+          color="bg-blue-500/10 text-blue-400"
+        />
+        <StatCard
+          label={t('stats.replied')}
+          value={broadcast.replied_count}
+          total={broadcast.total_recipients}
+          icon={<MessageCircle className="h-4 w-4" />}
+          color="bg-indigo-500/10 text-indigo-400"
+        />
+        <StatCard
+          label={t('stats.failed')}
+          value={broadcast.failed_count}
+          total={broadcast.total_recipients}
+          icon={<AlertCircle className="h-4 w-4" />}
+          color="bg-red-500/10 text-red-400"
+        />
+      </div>
+
+      <FunnelChart steps={funnelSteps} />
+
       {/* Recipients Table */}
-      <div className="rounded-xl border border-slate-800 bg-slate-900">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
-          <h2 className="text-sm font-medium text-white">
-            Recipients ({filteredRecipients.length}
-            {statusFilter !== 'all' ? ` of ${recipients.length}` : ''})
+      <div className="rounded-xl border border-border bg-card">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+          <h2 className="text-sm font-medium text-foreground">
+            {statusFilter !== 'all'
+              ? t('recipientsHeader', { filtered: filteredRecipients.length, total: recipients.length })
+              : t('recipientsHeaderAll', { total: recipients.length })}
           </h2>
           {acceptedByMetaCount > 0 && (
-            <span className="text-xs text-slate-500">
+            <span className="text-xs text-muted-foreground">
               Accepted by Meta: {acceptedByMetaCount.toLocaleString()}
             </span>
           )}
@@ -1021,34 +1061,36 @@ export default function BroadcastDetailPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    className="border-slate-700 text-slate-300 hover:bg-slate-800"
+                    className="border-border text-muted-foreground hover:bg-muted"
                   />
                 }
               >
                 <Filter className="h-3.5 w-3.5" />
                 {statusFilter === 'all'
-                  ? 'All statuses'
-                  : getRecipientStatus(statusFilter).label}
+                  ? t('allStatuses')
+                  : tStatus(getRecipientStatus(statusFilter).label)}
                 <ChevronDown className="h-3 w-3" />
               </DropdownMenuTrigger>
-              <DropdownMenuContent className="border-slate-700 bg-slate-900">
+              <DropdownMenuContent className="border-border bg-popover">
                 <DropdownMenuItem
                   onClick={() => setStatusFilter('all')}
                   className={
-                    statusFilter === 'all' ? 'text-primary' : 'text-slate-300'
+                    statusFilter === 'all' ? 'text-primary' : 'text-popover-foreground'
                   }
                 >
-                  All statuses
+                  {t('allStatuses')}
                 </DropdownMenuItem>
                 {RECIPIENT_STATUSES.map((s) => (
                   <DropdownMenuItem
                     key={s}
                     onClick={() => setStatusFilter(s)}
                     className={
-                      statusFilter === s ? 'text-primary' : 'text-slate-300'
+                      statusFilter === s
+                        ? 'text-primary'
+                        : 'text-popover-foreground'
                     }
                   >
-                    {getRecipientStatus(s).label}
+                    {tStatus(getRecipientStatus(s).label)}
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>
@@ -1059,83 +1101,95 @@ export default function BroadcastDetailPage() {
               size="sm"
               onClick={handleExport}
               disabled={recipients.length === 0}
-              className="border-slate-700 text-slate-300 hover:bg-slate-800"
+              className="border-border text-muted-foreground hover:bg-muted"
             >
               <Download className="h-3.5 w-3.5" />
-              Export CSV
+              {t('exportCsv')}
             </Button>
           </div>
         </div>
 
         {filteredRecipients.length === 0 ? (
           <div className="flex h-32 items-center justify-center">
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-muted-foreground">
               {recipients.length === 0
-                ? 'No recipients found.'
-                : 'No recipients match this filter.'}
+                ? t('noRecipients')
+                : t('noRecipientsFilter')}
             </p>
           </div>
         ) : (
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
-                <TableRow className="border-slate-800 hover:bg-transparent">
-                  <TableHead className="text-slate-400">Contact</TableHead>
-                  <TableHead className="text-slate-400">Phone</TableHead>
-                  <TableHead className="text-slate-400">Status</TableHead>
-                  <TableHead className="text-slate-400">Failure</TableHead>
-                  <TableHead className="text-slate-400">Sent</TableHead>
-                  <TableHead className="text-slate-400">Delivered</TableHead>
-                  <TableHead className="text-slate-400">Read</TableHead>
-                  <TableHead className="text-slate-400">Error</TableHead>
+                <TableRow className="border-border hover:bg-transparent">
+                  <TableHead className="text-muted-foreground">{t('table.contact')}</TableHead>
+                  <TableHead className="text-muted-foreground">{t('table.phone')}</TableHead>
+                  <TableHead className="text-muted-foreground">{t('table.status')}</TableHead>
+                  <TableHead className="text-muted-foreground">{t('table.sent')}</TableHead>
+                  <TableHead className="text-muted-foreground">{t('table.delivered')}</TableHead>
+                  <TableHead className="text-muted-foreground">{t('table.read')}</TableHead>
+                  <TableHead className="text-muted-foreground">{t('table.error')}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredRecipients.map((recipient) => {
+                  // "Accepted" is a synthetic status (pending + Meta already
+                  // returned a message id) with no translation key of its
+                  // own — every other value still routes through tStatus.
+                  const isAccepted =
+                    recipient.status === 'pending' &&
+                    Boolean(recipient.whatsapp_message_id);
                   const rStatus = getRecipientDisplayStatus(recipient);
+                  const failureCategory = recipient.error_message
+                    ? getFailureCategory(recipient.error_message)
+                    : null;
                   return (
-                    <TableRow key={recipient.id} className="border-slate-800">
-                      <TableCell className="font-medium text-white">
+                    <TableRow key={recipient.id} className="border-border">
+                      <TableCell className="font-medium text-foreground">
                         {recipient.contact?.name ?? 'Unknown'}
                       </TableCell>
-                      <TableCell className="text-slate-300">
+                      <TableCell className="text-muted-foreground">
                         {recipient.contact?.phone ?? '-'}
                       </TableCell>
                       <TableCell>
                         <span
                           className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${rStatus.classes}`}
                         >
-                          {rStatus.label}
+                          {isAccepted ? rStatus.label : tStatus(rStatus.label)}
                         </span>
                       </TableCell>
-                      <TableCell>
-                        {recipient.error_message ? (
-                          <span
-                            className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${getFailureCategory(recipient.error_message).classes}`}
-                          >
-                            {getFailureCategory(recipient.error_message).label}
-                          </span>
-                        ) : (
-                          <span className="text-slate-500">-</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-slate-400">
+                      <TableCell className="text-muted-foreground">
                         {recipient.sent_at
                           ? new Date(recipient.sent_at).toLocaleString()
                           : '-'}
                       </TableCell>
-                      <TableCell className="text-slate-400">
+                      <TableCell className="text-muted-foreground">
                         {recipient.delivered_at
                           ? new Date(recipient.delivered_at).toLocaleString()
                           : '-'}
                       </TableCell>
-                      <TableCell className="text-slate-400">
+                      <TableCell className="text-muted-foreground">
                         {recipient.read_at
                           ? new Date(recipient.read_at).toLocaleString()
                           : '-'}
                       </TableCell>
-                      <TableCell className="max-w-xs truncate text-xs text-red-400">
-                        {recipient.error_message ?? '-'}
+                      <TableCell className="max-w-xs text-xs">
+                        {recipient.error_message ? (
+                          <div className="space-y-1">
+                            {failureCategory && (
+                              <span
+                                className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[11px] font-medium ${failureCategory.classes}`}
+                              >
+                                {failureCategory.label}
+                              </span>
+                            )}
+                            <p className="truncate text-red-400">
+                              {recipient.error_message}
+                            </p>
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
                       </TableCell>
                     </TableRow>
                   );

@@ -1,31 +1,26 @@
 'use client';
 
-import {
-  type ChangeEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
-import { toast } from 'sonner';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { parseBroadcastCsv } from '@/lib/broadcast-csv';
 import { Contact, CustomField, Tag } from '@/types';
 import { Button } from '@/components/ui/button';
+import { toast } from 'sonner';
 import {
-  Check,
-  FileText,
   Users,
   Tags,
   Filter,
   Upload,
+  FileText,
   Loader2,
   ArrowRight,
   ArrowLeft,
   X,
   Search,
   UserCheck,
+  Check,
 } from 'lucide-react';
+import { useTranslations } from 'next-intl';
 
 type AudienceType = 'all' | 'contacts' | 'tags' | 'custom_field' | 'csv';
 type CustomFieldOperator = 'is' | 'is_not' | 'contains';
@@ -38,6 +33,7 @@ interface CustomFieldFilter {
 
 interface AudienceConfig {
   type: AudienceType;
+  /** Individually-selected contact ids — used when type is 'contacts'. */
   contactIds?: string[];
   tagIds?: string[];
   customField?: CustomFieldFilter;
@@ -52,112 +48,57 @@ interface Step2Props {
   onBack: () => void;
 }
 
-const audienceOptions: {
-  type: AudienceType;
-  label: string;
-  description: string;
-  icon: typeof Users;
-}[] = [
-  {
-    type: 'all',
-    label: 'All Contacts',
-    description: 'Send to every contact in your database',
-    icon: Users,
-  },
-  {
-    type: 'contacts',
-    label: 'Select Contacts',
-    description: 'Pick individual recipients',
-    icon: UserCheck,
-  },
-  {
-    type: 'tags',
-    label: 'Filter by Tags',
-    description: 'Target contacts with specific tags',
-    icon: Tags,
-  },
-  {
-    type: 'custom_field',
-    label: 'Custom Field',
-    description: 'Filter by a custom field value',
-    icon: Filter,
-  },
-  {
-    type: 'csv',
-    label: 'Upload CSV',
-    description: 'Upload a list of phone numbers',
-    icon: Upload,
-  },
-];
-
-const OPERATOR_OPTIONS: { value: CustomFieldOperator; label: string }[] = [
-  { value: 'is', label: 'is' },
-  { value: 'is_not', label: 'is not' },
-  { value: 'contains', label: 'contains' },
-];
-
-interface CsvContact {
-  phone: string;
-  name?: string;
-}
-
-function parseCsvLine(line: string): string[] {
-  const values: string[] = [];
-  let current = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    const next = line[i + 1];
-
-    if (char === '"' && inQuotes && next === '"') {
-      current += '"';
-      i++;
-    } else if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
-      values.push(current.trim());
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-
-  values.push(current.trim());
-  return values.map((value) => value.replace(/^["']|["']$/g, '').trim());
-}
-
-function parseCsvContacts(text: string): CsvContact[] {
-  const lines = text.trim().split(/\r?\n/);
-  if (lines.length < 2) return [];
-
-  const headers = parseCsvLine(lines[0]).map((header) => header.toLowerCase());
-  const phoneIndex = headers.indexOf('phone');
-  if (phoneIndex === -1) return [];
-
-  const nameIndex = headers.indexOf('name');
-  const rows: CsvContact[] = [];
-
-  for (const line of lines.slice(1)) {
-    if (!line.trim()) continue;
-    const values = parseCsvLine(line);
-    const phone = values[phoneIndex]?.trim();
-    if (!phone) continue;
-    rows.push({
-      phone,
-      name: nameIndex >= 0 ? values[nameIndex]?.trim() || undefined : undefined,
-    });
-  }
-
-  return rows;
-}
-
 export function Step2SelectAudience({
   audience,
   onUpdate,
   onNext,
   onBack,
 }: Step2Props) {
+  const t = useTranslations('Broadcasts.wizard');
+
+  const OPERATOR_OPTIONS = useMemo<{ value: CustomFieldOperator; label: string }[]>(() => [
+    { value: 'is', label: t('selectAudience.operatorIs') },
+    { value: 'is_not', label: t('selectAudience.operatorIsNot') },
+    { value: 'contains', label: t('selectAudience.operatorContains') },
+  ], [t]);
+
+  const audienceOptions = useMemo<{
+    type: AudienceType;
+    label: string;
+    description: string;
+    icon: typeof Users;
+  }[]>(() => [
+    {
+      type: 'all',
+      label: t('selectAudience.method.all'),
+      description: t('selectAudience.allDescLoading'),
+      icon: Users,
+    },
+    {
+      type: 'contacts',
+      label: t('selectAudience.method.contacts'),
+      description: t('selectAudience.contactsDesc'),
+      icon: UserCheck,
+    },
+    {
+      type: 'tags',
+      label: t('selectAudience.method.tags'),
+      description: t('selectAudience.tagDesc'),
+      icon: Tags,
+    },
+    {
+      type: 'custom_field',
+      label: t('selectAudience.method.customField'),
+      description: t('selectAudience.customFieldDesc'),
+      icon: Filter,
+    },
+    {
+      type: 'csv',
+      label: t('selectAudience.method.csv'),
+      description: t('selectAudience.csvDesc'),
+      icon: Upload,
+    },
+  ], [t]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
@@ -167,9 +108,16 @@ export function Step2SelectAudience({
   const [estimatedCount, setEstimatedCount] = useState<number | null>(null);
   const [loadingCount, setLoadingCount] = useState(false);
   const [contactSearch, setContactSearch] = useState('');
-  const [csvFileName, setCsvFileName] = useState('');
-  const [csvError, setCsvError] = useState<string | null>(null);
+  // The picked file's name, shown back to the user. The parsed rows
+  // themselves live on `audience.csvContacts` (owned by the wizard) so
+  // they survive stepping forward and back.
+  const [pickedCsvName, setPickedCsvName] = useState<string | null>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
+
+  const csvCount = audience.csvContacts?.length ?? 0;
+  // Only meaningful while the rows it produced are still in play —
+  // picking another audience type wipes `csvContacts`.
+  const csvFileName = csvCount > 0 ? pickedCsvName : null;
 
   // Tags are used both by the primary "Filter by Tags" audience type
   // AND by the exclude-list below — so always load once on mount.
@@ -290,7 +238,9 @@ export function Step2SelectAudience({
       }
 
       if (baseIds) {
-        const effective = [...baseIds].filter((id) => !excludeSet?.has(id));
+        const effective = [...baseIds].filter(
+          (id) => !excludeSet?.has(id),
+        );
         setEstimatedCount(effective.length);
       } else {
         // "All" — fetch the total, then subtract exclude set if any.
@@ -298,9 +248,7 @@ export function Step2SelectAudience({
           .from('contacts')
           .select('*', { count: 'exact', head: true });
         const total = count ?? 0;
-        setEstimatedCount(
-          excludeSet ? Math.max(0, total - excludeSet.size) : total
-        );
+        setEstimatedCount(excludeSet ? Math.max(0, total - excludeSet.size) : total);
       }
     } finally {
       setLoadingCount(false);
@@ -318,12 +266,37 @@ export function Step2SelectAudience({
     fetchEstimatedCount();
   }, [fetchEstimatedCount]);
 
-  function toggleTag(tagId: string) {
-    const current = audience.tagIds ?? [];
-    const updated = current.includes(tagId)
-      ? current.filter((id) => id !== tagId)
-      : [...current, tagId];
-    onUpdate({ ...audience, tagIds: updated });
+  async function handleCsvChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const selected = e.target.files?.[0];
+    if (!selected) return;
+
+    const result = parseBroadcastCsv(await selected.text());
+
+    if (!result.ok) {
+      toast.error(
+        result.error === 'missing_phone_column'
+          ? t('selectAudience.errorCsvMissingPhone')
+          : t('selectAudience.errorCsvParse'),
+      );
+      // Clear the input so re-picking the same corrected file still
+      // fires `change` (the browser suppresses it for an identical value).
+      e.target.value = '';
+      setPickedCsvName(null);
+      onUpdate({ ...audience, csvContacts: undefined });
+      return;
+    }
+
+    // Rows without a leading `+` and country code were refused (issue
+    // #586). Say so, or a spreadsheet export that stripped the `+` looks
+    // like a mysteriously smaller audience.
+    if (result.invalid > 0) {
+      toast.warning(
+        t('selectAudience.csvInvalidPhones', { count: result.invalid }),
+      );
+    }
+
+    setPickedCsvName(selected.name);
+    onUpdate({ ...audience, csvContacts: result.contacts });
   }
 
   function toggleContact(contactId: string) {
@@ -344,6 +317,14 @@ export function Step2SelectAudience({
     onUpdate({ ...audience, contactIds: [] });
   }
 
+  function toggleTag(tagId: string) {
+    const current = audience.tagIds ?? [];
+    const updated = current.includes(tagId)
+      ? current.filter((id) => id !== tagId)
+      : [...current, tagId];
+    onUpdate({ ...audience, tagIds: updated });
+  }
+
   function toggleExcludeTag(tagId: string) {
     const current = audience.excludeTagIds ?? [];
     const updated = current.includes(tagId)
@@ -361,42 +342,13 @@ export function Step2SelectAudience({
     onUpdate({ ...audience, customField: { ...prev, ...patch } });
   }
 
-  async function handleCsvFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    setCsvFileName(file.name);
-    setCsvError(null);
-
-    try {
-      const csvContacts = parseCsvContacts(await file.text());
-      if (csvContacts.length === 0) {
-        throw new Error(
-          'CSV must include a phone column and at least one row.'
-        );
-      }
-      onUpdate({ ...audience, type: 'csv', csvContacts });
-      toast.success(
-        `${csvContacts.length} CSV contact${csvContacts.length === 1 ? '' : 's'} loaded`
-      );
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Could not parse CSV file.';
-      setCsvError(message);
-      onUpdate({ ...audience, type: 'csv', csvContacts: [] });
-      toast.error(message);
-    } finally {
-      event.target.value = '';
-    }
-  }
-
   const filteredContacts = useMemo(() => {
     const query = contactSearch.trim().toLowerCase();
     if (!query) return contacts;
     return contacts.filter((contact) =>
       [contact.name, contact.phone, contact.email, contact.company]
         .filter(Boolean)
-        .some((value) => value!.toLowerCase().includes(query))
+        .some((value) => value!.toLowerCase().includes(query)),
     );
   }, [contacts, contactSearch]);
 
@@ -405,9 +357,7 @@ export function Step2SelectAudience({
     (audience.type === 'contacts' &&
       audience.contactIds &&
       audience.contactIds.length > 0) ||
-    (audience.type === 'tags' &&
-      audience.tagIds &&
-      audience.tagIds.length > 0) ||
+    (audience.type === 'tags' && audience.tagIds && audience.tagIds.length > 0) ||
     (audience.type === 'custom_field' &&
       !!audience.customField?.fieldId &&
       audience.customField.value.length > 0) ||
@@ -418,14 +368,14 @@ export function Step2SelectAudience({
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold text-white">Select Audience</h2>
-        <p className="mt-1 text-sm text-slate-400">
-          Choose who will receive this broadcast.
+        <h2 className="text-lg font-semibold text-foreground">{t('selectAudience.title')}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {t('selectAudience.subtitle')}
         </p>
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {audienceOptions.map((option) => {
+        {audienceOptions.map((option: { type: AudienceType; label: string; description: string; icon: typeof Users }) => {
           const isSelected = audience.type === option.type;
           const Icon = option.icon;
           return (
@@ -438,9 +388,7 @@ export function Step2SelectAudience({
                   // Wipe shape fields from other types to avoid stale
                   // config leaking across selections.
                   contactIds:
-                    option.type === 'contacts'
-                      ? audience.contactIds
-                      : undefined,
+                    option.type === 'contacts' ? audience.contactIds : undefined,
                   tagIds: option.type === 'tags' ? audience.tagIds : undefined,
                   customField:
                     option.type === 'custom_field'
@@ -452,22 +400,22 @@ export function Step2SelectAudience({
               }
               className={`flex items-start gap-3 rounded-xl border p-4 text-left transition-all ${
                 isSelected
-                  ? 'border-primary bg-primary/5 ring-primary/30 ring-1'
-                  : 'border-slate-800 bg-slate-900/50 hover:border-slate-700'
+                  ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                  : 'border-border bg-card/50 hover:border-border'
               }`}
             >
               <div
                 className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
                   isSelected
                     ? 'bg-primary/10 text-primary'
-                    : 'bg-slate-800 text-slate-400'
+                    : 'bg-muted text-muted-foreground'
                 }`}
               >
                 <Icon className="h-4 w-4" />
               </div>
               <div>
-                <p className="text-sm font-medium text-white">{option.label}</p>
-                <p className="mt-0.5 text-xs text-slate-400">
+                <p className="text-sm font-medium text-foreground">{option.label}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
                   {option.description}
                 </p>
               </div>
@@ -477,32 +425,34 @@ export function Step2SelectAudience({
       </div>
 
       {audience.type === 'contacts' && (
-        <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+        <div className="space-y-3 rounded-xl border border-border bg-card/50 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-medium text-white">
-              Select Individual Contacts
+            <p className="text-sm font-medium text-foreground">
+              {t('selectAudience.selectContacts')}
             </p>
-            <span className="text-xs text-slate-500">
-              {(audience.contactIds ?? []).length} selected
+            <span className="text-xs text-muted-foreground">
+              {t('selectAudience.contactsSelectedCount', {
+                count: (audience.contactIds ?? []).length,
+              })}
             </span>
           </div>
 
           <div className="relative">
-            <Search className="absolute top-2.5 left-2.5 h-4 w-4 text-slate-500" />
+            <Search className="absolute top-2.5 left-2.5 h-4 w-4 text-muted-foreground" />
             <input
               type="search"
               value={contactSearch}
               onChange={(event) => setContactSearch(event.target.value)}
-              placeholder="Search by name, phone, email, or company"
-              className="focus:border-primary focus:ring-primary h-9 w-full rounded-lg border border-slate-700 bg-slate-800 pr-2.5 pl-8 text-sm text-white outline-none placeholder:text-slate-500 focus:ring-1"
+              placeholder={t('selectAudience.searchContacts')}
+              className="h-9 w-full rounded-lg border border-border bg-muted pr-2.5 pl-8 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary focus:ring-1 focus:ring-primary"
             />
           </div>
 
           {loadingContacts ? (
-            <Loader2 className="text-primary h-5 w-5 animate-spin" />
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
           ) : contacts.length === 0 ? (
-            <p className="text-xs text-slate-400">
-              No contacts found. Add contacts first or use CSV upload.
+            <p className="text-xs text-muted-foreground">
+              {t('selectAudience.noContactsFound')}
             </p>
           ) : (
             <>
@@ -512,29 +462,29 @@ export function Step2SelectAudience({
                   variant="outline"
                   onClick={selectVisibleContacts}
                   disabled={filteredContacts.length === 0}
-                  className="h-8 border-slate-700 text-xs text-slate-300"
+                  className="h-8 border-border text-xs text-muted-foreground"
                 >
-                  Select visible
+                  {t('selectAudience.selectVisibleContacts')}
                 </Button>
                 <Button
                   type="button"
                   variant="outline"
                   onClick={clearSelectedContacts}
                   disabled={(audience.contactIds ?? []).length === 0}
-                  className="h-8 border-slate-700 text-xs text-slate-300"
+                  className="h-8 border-border text-xs text-muted-foreground"
                 >
-                  Clear
+                  {t('selectAudience.clearSelectedContacts')}
                 </Button>
               </div>
               <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
                 {filteredContacts.length === 0 ? (
-                  <p className="text-xs text-slate-500">
-                    No contacts match this search.
+                  <p className="text-xs text-muted-foreground">
+                    {t('selectAudience.noContactsMatch')}
                   </p>
                 ) : (
                   filteredContacts.map((contact) => {
                     const isSelected = audience.contactIds?.includes(
-                      contact.id
+                      contact.id,
                     );
                     return (
                       <button
@@ -544,20 +494,20 @@ export function Step2SelectAudience({
                         className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-all ${
                           isSelected
                             ? 'border-primary/30 bg-primary/10'
-                            : 'border-slate-800 bg-slate-950/40 hover:border-slate-700'
+                            : 'border-border bg-card/40 hover:border-border'
                         }`}
                       >
                         <span className="min-w-0">
-                          <span className="block truncate text-sm text-white">
+                          <span className="block truncate text-sm text-foreground">
                             {contact.name || contact.phone}
                           </span>
-                          <span className="block truncate text-xs text-slate-400">
+                          <span className="block truncate text-xs text-muted-foreground">
                             {contact.phone}
                             {contact.email ? ` · ${contact.email}` : ''}
                           </span>
                         </span>
                         {isSelected && (
-                          <Check className="text-primary h-4 w-4 shrink-0" />
+                          <Check className="h-4 w-4 shrink-0 text-primary" />
                         )}
                       </button>
                     );
@@ -570,13 +520,13 @@ export function Step2SelectAudience({
       )}
 
       {audience.type === 'tags' && (
-        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-          <p className="mb-3 text-sm font-medium text-white">Select Tags</p>
+        <div className="rounded-xl border border-border bg-card/50 p-4">
+          <p className="mb-3 text-sm font-medium text-foreground">{t('selectAudience.selectTags')}</p>
           {loadingTags ? (
-            <Loader2 className="text-primary h-5 w-5 animate-spin" />
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
           ) : tags.length === 0 ? (
-            <p className="text-xs text-slate-400">
-              No tags found. Create tags in Settings.
+            <p className="text-xs text-muted-foreground">
+              {t('selectAudience.noTagsFound')}
             </p>
           ) : (
             <div className="flex flex-wrap gap-2">
@@ -589,7 +539,7 @@ export function Step2SelectAudience({
                     className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-all ${
                       isSelected
                         ? 'border-primary/30 bg-primary/10 text-primary'
-                        : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-600'
+                        : 'border-border bg-muted text-muted-foreground hover:border-border'
                     }`}
                   >
                     <span
@@ -606,22 +556,22 @@ export function Step2SelectAudience({
       )}
 
       {audience.type === 'custom_field' && (
-        <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-          <p className="text-sm font-medium text-white">Custom Field Filter</p>
+        <div className="space-y-3 rounded-xl border border-border bg-card/50 p-4">
+          <p className="text-sm font-medium text-foreground">{t('selectAudience.method.customField')}</p>
           {loadingFields ? (
-            <Loader2 className="text-primary h-5 w-5 animate-spin" />
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
           ) : customFields.length === 0 ? (
-            <p className="text-xs text-slate-400">
-              No custom fields defined. Create one in Settings → Custom Fields.
+            <p className="text-xs text-muted-foreground">
+              {t('selectAudience.errorLoadFields')}
             </p>
           ) : (
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_140px_minmax(0,1fr)]">
               <select
                 value={audience.customField?.fieldId ?? ''}
                 onChange={(e) => updateCustomField({ fieldId: e.target.value })}
-                className="focus:border-primary focus:ring-primary h-9 rounded-lg border border-slate-700 bg-slate-800 px-2.5 text-sm text-white outline-none focus:ring-1"
+                className="h-9 rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
               >
-                <option value="">Select field…</option>
+                <option value="">{t('selectAudience.selectField')}</option>
                 {customFields.map((f) => (
                   <option key={f.id} value={f.id}>
                     {f.field_name}
@@ -635,9 +585,9 @@ export function Step2SelectAudience({
                     operator: e.target.value as CustomFieldOperator,
                   })
                 }
-                className="focus:border-primary focus:ring-primary h-9 rounded-lg border border-slate-700 bg-slate-800 px-2.5 text-sm text-white outline-none focus:ring-1"
+                className="h-9 rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary"
               >
-                {OPERATOR_OPTIONS.map((op) => (
+                {OPERATOR_OPTIONS.map((op: { value: CustomFieldOperator; label: string }) => (
                   <option key={op.value} value={op.value}>
                     {op.label}
                   </option>
@@ -647,8 +597,8 @@ export function Step2SelectAudience({
                 type="text"
                 value={audience.customField?.value ?? ''}
                 onChange={(e) => updateCustomField({ value: e.target.value })}
-                placeholder="Value"
-                className="focus:border-primary focus:ring-primary h-9 rounded-lg border border-slate-700 bg-slate-800 px-2.5 text-sm text-white outline-none placeholder:text-slate-500 focus:ring-1"
+                placeholder={t('selectAudience.valuePlaceholder')}
+                className="h-9 rounded-lg border border-border bg-muted px-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-primary focus:ring-1 focus:ring-primary"
               />
             </div>
           )}
@@ -656,95 +606,58 @@ export function Step2SelectAudience({
       )}
 
       {audience.type === 'csv' && (
-        <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-medium text-white">Upload CSV</p>
-            {audience.csvContacts && audience.csvContacts.length > 0 && (
-              <span className="text-xs text-slate-500">
-                {audience.csvContacts.length} row
-                {audience.csvContacts.length === 1 ? '' : 's'} loaded
-              </span>
-            )}
+        <div className="space-y-3 rounded-xl border border-border bg-card/50 p-4">
+          <div>
+            <p className="text-sm font-medium text-foreground">
+              {t('selectAudience.uploadCsv')}
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {t('selectAudience.csvFormatDesc')}
+            </p>
           </div>
 
           <button
             type="button"
             onClick={() => csvInputRef.current?.click()}
-            className="hover:border-primary/50 flex w-full flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-700 p-6 text-center transition-colors"
+            className="group flex w-full flex-col items-center gap-2 rounded-lg border border-dashed border-border bg-muted/40 px-4 py-6 text-center transition-colors hover:border-primary/40 hover:bg-muted/70"
           >
-            {csvFileName ? (
-              <>
-                <FileText className="text-primary h-8 w-8" />
-                <span className="text-sm text-slate-300">{csvFileName}</span>
-              </>
-            ) : (
-              <>
-                <Upload className="h-8 w-8 text-slate-500" />
-                <span className="text-sm text-slate-400">
-                  Click to upload CSV file
-                </span>
-                <span className="text-xs text-slate-500">
-                  Required column: phone. Optional column: name.
-                </span>
-              </>
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted text-muted-foreground group-hover:text-foreground">
+              {csvFileName ? (
+                <FileText className="h-5 w-5" />
+              ) : (
+                <Upload className="h-5 w-5" />
+              )}
+            </div>
+            <p className="text-sm text-foreground">
+              {csvFileName ?? t('selectAudience.uploadCsv')}
+            </p>
+            {csvCount > 0 && (
+              <p className="text-xs text-primary">
+                {t('selectAudience.csvContactsFound', { count: csvCount })}
+              </p>
             )}
           </button>
+
           <input
             ref={csvInputRef}
             type="file"
             accept=".csv,text/csv"
-            onChange={handleCsvFileChange}
+            onChange={handleCsvChange}
             className="hidden"
           />
-
-          {csvError && <p className="text-xs text-red-400">{csvError}</p>}
-
-          {audience.csvContacts && audience.csvContacts.length > 0 && (
-            <div className="overflow-hidden rounded-lg border border-slate-800">
-              <table className="w-full text-xs">
-                <thead className="bg-slate-800 text-slate-400">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-medium">Phone</th>
-                    <th className="px-3 py-2 text-left font-medium">Name</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {audience.csvContacts.slice(0, 5).map((contact, index) => (
-                    <tr
-                      key={`${contact.phone}-${index}`}
-                      className="border-t border-slate-800"
-                    >
-                      <td className="px-3 py-2 text-slate-300">
-                        {contact.phone}
-                      </td>
-                      <td className="px-3 py-2 text-slate-400">
-                        {contact.name || '-'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {audience.csvContacts.length > 5 && (
-                <p className="border-t border-slate-800 px-3 py-2 text-xs text-slate-500">
-                  ...and {audience.csvContacts.length - 5} more rows
-                </p>
-              )}
-            </div>
-          )}
         </div>
       )}
 
       {/* Exclude list — applies regardless of audience type */}
-      <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+      <div className="rounded-xl border border-border bg-card/50 p-4">
         <div className="mb-3 flex items-center gap-2">
           <X className="h-4 w-4 text-red-400" />
-          <p className="text-sm font-medium text-white">
-            Exclude contacts with these tags
+          <p className="text-sm font-medium text-foreground">
+            {t('selectAudience.excludeTags')}
           </p>
-          <span className="text-xs text-slate-500">(optional)</span>
         </div>
         {tags.length === 0 ? (
-          <p className="text-xs text-slate-500">No tags available.</p>
+          <p className="text-xs text-muted-foreground">{t('selectAudience.noTagsFound')}</p>
         ) : (
           <div className="flex flex-wrap gap-2">
             {tags.map((tag) => {
@@ -756,7 +669,7 @@ export function Step2SelectAudience({
                   className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition-all ${
                     isExcluded
                       ? 'border-red-500/30 bg-red-500/10 text-red-300'
-                      : 'border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-600'
+                      : 'border-border bg-muted text-muted-foreground hover:border-border'
                   }`}
                 >
                   <span
@@ -772,43 +685,43 @@ export function Step2SelectAudience({
       </div>
 
       {/* Audience Summary */}
-      <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-        <p className="mb-2 text-sm font-medium text-white">Audience Summary</p>
+      <div className="rounded-xl border border-border bg-card/50 p-4">
+        <p className="mb-2 text-sm font-medium text-foreground">{t('selectAudience.audienceSummary')}</p>
         {loadingCount ? (
           <div className="flex items-center gap-2">
-            <Loader2 className="text-primary h-4 w-4 animate-spin" />
-            <span className="text-xs text-slate-400">Calculating…</span>
+            <Loader2 className="h-4 w-4 animate-spin text-primary" />
+            <span className="text-xs text-muted-foreground">{t('selectAudience.calculating')}</span>
           </div>
         ) : estimatedCount !== null ? (
           <div className="flex items-center gap-2">
-            <Users className="text-primary h-4 w-4" />
-            <span className="text-sm text-white">
+            <Users className="h-4 w-4 text-primary" />
+            <span className="text-sm text-foreground">
               {estimatedCount.toLocaleString()}
             </span>
-            <span className="text-xs text-slate-400">estimated recipients</span>
+            <span className="text-xs text-muted-foreground">estimated recipients</span>
           </div>
         ) : (
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-muted-foreground">
             Select an audience type to see the estimate.
           </p>
         )}
       </div>
 
-      <div className="flex items-center justify-between border-t border-slate-800 pt-4">
+      <div className="flex items-center justify-between border-t border-border pt-4">
         <Button
           variant="outline"
           onClick={onBack}
-          className="border-slate-700 text-slate-300"
+          className="border-border text-muted-foreground"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back
+          {t('back')}
         </Button>
         <Button
           onClick={onNext}
           disabled={!isValid}
           className="bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
         >
-          Next
+          {t('next')}
           <ArrowRight className="h-4 w-4" />
         </Button>
       </div>

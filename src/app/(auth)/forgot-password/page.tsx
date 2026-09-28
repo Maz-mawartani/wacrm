@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +17,7 @@ import {
 import { MessageSquare, CheckCircle, ArrowLeft } from "lucide-react";
 
 export default function ForgotPasswordPage() {
+  const t = useTranslations("ForgotPasswordPage");
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -27,8 +29,13 @@ export default function ForgotPasswordPage() {
     setError(null);
     setLoading(true);
 
+    // The emailed link returns to /auth/callback, which exchanges it
+    // for a recovery session and forwards to /reset-password (issue
+    // #592). Supabase must allow this origin under Authentication →
+    // URL Configuration → Redirect URLs, or it silently falls back to
+    // its Site URL; see docs/auth-emails.md.
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/auth/callback?next=/reset-password`,
+      redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent("/reset-password")}`,
     });
 
     if (error) {
@@ -43,28 +50,31 @@ export default function ForgotPasswordPage() {
 
   if (success) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4">
-        <Card className="w-full max-w-md border-slate-800 bg-slate-900">
+      <div className="flex min-h-screen items-center justify-center bg-background px-4">
+        <Card className="w-full max-w-md border-border bg-card">
           <CardHeader className="items-center text-center">
             <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
               <CheckCircle className="h-6 w-6 text-primary" />
             </div>
-            <CardTitle className="text-xl text-white">
-              Check your email
+            <CardTitle className="text-xl text-foreground">
+              {t("checkEmailTitle")}
             </CardTitle>
-            <CardDescription className="text-slate-400">
-              We&apos;ve sent a password reset link to{" "}
-              <span className="text-white">{email}</span>. Please check your
-              inbox.
+            <CardDescription className="text-muted-foreground">
+              {t.rich("checkEmailDesc", {
+                email,
+                strong: (chunks) => (
+                  <span className="text-foreground">{chunks}</span>
+                ),
+              })}
             </CardDescription>
           </CardHeader>
           <CardContent>
             <Link href="/login">
               <Button
                 variant="outline"
-                className="w-full border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white"
+                className="w-full border-border text-muted-foreground hover:bg-muted hover:text-foreground"
               >
-                Back to sign in
+                {t("backToSignIn")}
               </Button>
             </Link>
           </CardContent>
@@ -74,15 +84,15 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 px-4">
-      <Card className="w-full max-w-md border-slate-800 bg-slate-900">
+    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+      <Card className="w-full max-w-md border-border bg-card">
         <CardHeader className="items-center text-center">
           <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
             <MessageSquare className="h-6 w-6 text-primary" />
           </div>
-          <CardTitle className="text-xl text-white">Reset password</CardTitle>
-          <CardDescription className="text-slate-400">
-            Enter your email and we&apos;ll send you a reset link
+          <CardTitle className="text-xl text-foreground">{t("title")}</CardTitle>
+          <CardDescription className="text-muted-foreground">
+            {t("desc")}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -94,17 +104,17 @@ export default function ForgotPasswordPage() {
             )}
 
             <div className="flex flex-col gap-2">
-              <Label htmlFor="email" className="text-slate-300">
-                Email
+              <Label htmlFor="email" className="text-muted-foreground">
+                {t("emailLabel")}
               </Label>
               <Input
                 id="email"
                 type="email"
-                placeholder="you@example.com"
+                placeholder={t("emailPlaceholder")}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                className="border-slate-700 bg-slate-800 text-white placeholder:text-slate-500 focus-visible:border-primary focus-visible:ring-primary/20"
+                className="border-border bg-muted text-foreground placeholder:text-muted-foreground focus-visible:border-primary focus-visible:ring-primary/20"
               />
             </div>
 
@@ -113,16 +123,16 @@ export default function ForgotPasswordPage() {
               disabled={loading}
               className="mt-2 h-10 w-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
-              {loading ? "Sending..." : "Send reset link"}
+              {loading ? t("sending") : t("sendLink")}
             </Button>
           </form>
 
           <Link
             href="/login"
-            className="mt-6 flex items-center justify-center gap-2 text-sm text-slate-400 hover:text-slate-300"
+            className="mt-6 flex items-center justify-center gap-2 text-sm text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="h-4 w-4" />
-            Back to sign in
+            {t("backToSignIn")}
           </Link>
         </CardContent>
       </Card>

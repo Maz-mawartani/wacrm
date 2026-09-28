@@ -36,9 +36,12 @@ import { supabaseAdmin } from "./admin-client";
 import {
   engineSendInteractiveButtons,
   engineSendInteractiveList,
+  engineSendMedia,
   engineSendText,
 } from "./meta-send";
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
+import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
+import { removeContactTag } from "@/lib/contacts/tag-write";
 import {
   type CollectInputNodeConfig,
   type ConditionNodeConfig,
@@ -50,6 +53,7 @@ import {
   type ParsedInbound,
   type SendButtonsNodeConfig,
   type SendListNodeConfig,
+  type SendMediaNodeConfig,
   type SendMessageNodeConfig,
   type SetTagNodeConfig,
   type StartNodeConfig,
@@ -107,11 +111,34 @@ export function matchesKeywordTrigger(
   return false;
 }
 
+/**
+ * The strings an inbound message offers to a flow's *entry* trigger.
+ *
+ * Typed text offers itself. A button / list tap offers two: the visible
+ * title — what the customer would have typed had the button not been
+ * there — and the stable reply_id, because the automation engine's
+ * `interactive_reply` trigger routes on the id, so an author moving a
+ * menu into a flow reaches for the same value.
+ *
+ * Matching the id does mean a keyword that happens to be a substring of
+ * an id can fire (ids are author-controlled slugs, defaulting to
+ * `btn_1`). That is the same substring semantic keyword triggers
+ * already have for typed text, and the alternative — ignoring the id —
+ * silently breaks the author who keyed on it.
+ */
+export function entryTriggerTexts(message: ParsedInbound): string[] {
+  if (message.kind === "text") return [message.text];
+  return [...new Set([message.reply_title, message.reply_id])].filter(
+    (v): v is string => Boolean(v && v.trim()),
+  );
+}
+
 /** Nodes that advance to a next_node_key without waiting for input. */
 export function isAutoAdvancing(node_type: string): boolean {
   return (
     node_type === "start" ||
     node_type === "send_message" ||
+    node_type === "send_media" ||
     node_type === "condition" ||
     node_type === "set_tag"
   );
@@ -170,19 +197,21 @@ type AdminClient = ReturnType<typeof supabaseAdmin>;
 
 async function loadActiveRunForContact(
   db: AdminClient,
-  userId: string,
+  accountId: string,
   contactId: string,
 ): Promise<FlowRunRow | null> {
-  // The partial unique index `idx_one_active_run_per_contact` makes
-  // "two active runs for one contact" impossible by design. But a
-  // future migration glitch or manual SQL could create one, and
-  // .maybeSingle() throws on >1 row — which would kill dispatch for
-  // that contact's webhook entirely. .limit(1) is forgiving: pick the
-  // newest, let the cron sweep clean up the stale one.
+  // The partial unique index `idx_one_active_run_per_contact` was
+  // rebuilt in migration 017 over `(account_id, contact_id)` — so
+  // "two active runs for one contact in one account" is impossible
+  // by design. But a future migration glitch or manual SQL could
+  // create one, and .maybeSingle() throws on >1 row — which would
+  // kill dispatch for that contact's webhook entirely. .limit(1) is
+  // forgiving: pick the newest, let the cron sweep clean up the
+  // stale one.
   const { data, error } = await db
     .from("flow_runs")
     .select("*")
-    .eq("user_id", userId)
+    .eq("account_id", accountId)
     .eq("contact_id", contactId)
     .eq("status", "active")
     .order("started_at", { ascending: false })
@@ -279,16 +308,17 @@ async function logEvent(
  */
 async function isDuplicateInbound(
   db: AdminClient,
-  userId: string,
+  accountId: string,
   contactId: string,
   metaMessageId: string,
 ): Promise<boolean> {
-  // Fetch ALL run ids for this contact (active + historical). Bounded
-  // by how many flows the customer has been through — small.
+  // Fetch ALL run ids for this contact in this account (active +
+  // historical). Bounded by how many flows the customer has been
+  // through — small.
   const { data: runs } = await db
     .from("flow_runs")
     .select("id")
-    .eq("user_id", userId)
+    .eq("account_id", accountId)
     .eq("contact_id", contactId);
   if (!runs?.length) return false;
   const runIds = runs.map((r) => (r as { id: string }).id);
@@ -304,21 +334,27 @@ async function isDuplicateInbound(
 
 async function findEntryFlow(
   db: AdminClient,
-  userId: string,
+  accountId: string,
   message: ParsedInbound,
   isFirstInbound: boolean,
 ): Promise<FlowRow | null> {
-  // Only text messages can match an entry trigger. Interactive replies
-  // are responses to existing prompts; they never start a new flow.
-  if (message.kind !== "text") return null;
+  // A tap used to be rejected outright here, on the reasoning that
+  // interactive replies are responses to existing prompts. That holds
+  // only while a prompt is outstanding — and this function runs solely
+  // when the contact has NO active run, so there is nothing the tap
+  // could be answering. What it actually blocked was issue #490: an
+  // *automation* sends the buttons, the customer taps one, and the flow
+  // whose keyword matches that button never starts. Retyping the label
+  // by hand worked, which is the tell — same words, different envelope.
+  const candidates = entryTriggerTexts(message);
 
-  // Pull all active flows for this user. Active set is bounded (the
-  // builder discourages double-trigger overlap; partial index makes
-  // the lookup index-supported).
+  // Pull all active flows for this account. Active set is bounded
+  // (the builder discourages double-trigger overlap; partial index
+  // makes the lookup index-supported).
   const { data: flows, error } = await db
     .from("flows")
     .select("*")
-    .eq("user_id", userId)
+    .eq("account_id", accountId)
     .eq("status", "active")
     .order("created_at", { ascending: true });
   if (error || !flows) return null;
@@ -326,13 +362,17 @@ async function findEntryFlow(
   const typed = flows as FlowRow[];
   for (const flow of typed) {
     if (flow.trigger_type === "keyword") {
-      if (matchesKeywordTrigger(
-        message.text,
-        flow.trigger_config as KeywordTriggerConfig,
-      )) {
+      const cfg = flow.trigger_config as KeywordTriggerConfig;
+      if (candidates.some((text) => matchesKeywordTrigger(text, cfg))) {
         return flow;
       }
     } else if (flow.trigger_type === "first_inbound_message" && isFirstInbound) {
+      // Also reachable by a tap now: a broadcast template with a
+      // quick-reply button can genuinely be what prompts a contact's
+      // first-ever inbound. The automations dispatcher has always
+      // treated a tap that way (the webhook pushes
+      // `first_inbound_message` regardless of envelope) — flows were
+      // the inconsistent half.
       return flow;
     }
     // 'manual' triggers do not auto-start from inbound messages.
@@ -352,14 +392,25 @@ async function sendButtonsAndSuspend(
   node: FlowNodeRow,
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendButtonsNodeConfig;
+  // Every customer-visible string is interpolated against run.vars —
+  // same treatment send_message / collect_input already get (#553).
+  // `reply_id` is deliberately NOT interpolated: it is the routing key
+  // matchReplyId compares the tapped button against, so it must reach
+  // Meta byte-for-byte as authored. Interpolation can push a title past
+  // Meta's 20-char cap; meta-api's validator throws a descriptive error
+  // and the caller logs it — we never truncate silently.
   const { whatsapp_message_id } = await engineSendInteractiveButtons({
+    accountId: run.account_id,
     userId: run.user_id,
     conversationId: run.conversation_id!,
     contactId: run.contact_id!,
-    bodyText: cfg.text,
-    headerText: cfg.header_text,
-    footerText: cfg.footer_text,
-    buttons: cfg.buttons.map((b) => ({ id: b.reply_id, title: b.title })),
+    bodyText: interpolateVars(cfg.text, run.vars),
+    headerText: interpolateOptionalVars(cfg.header_text, run.vars),
+    footerText: interpolateOptionalVars(cfg.footer_text, run.vars),
+    buttons: cfg.buttons.map((b) => ({
+      id: b.reply_id,
+      title: interpolateVars(b.title, run.vars),
+    })),
   });
   await logEvent(db, run.id, "message_sent", node.node_key, {
     node_type: "send_buttons",
@@ -387,20 +438,23 @@ async function sendListAndSuspend(
   node: FlowNodeRow,
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendListNodeConfig;
+  // See sendButtonsAndSuspend — interpolate every visible string,
+  // never the row `reply_id`.
   const { whatsapp_message_id } = await engineSendInteractiveList({
+    accountId: run.account_id,
     userId: run.user_id,
     conversationId: run.conversation_id!,
     contactId: run.contact_id!,
-    bodyText: cfg.text,
-    buttonLabel: cfg.button_label,
-    headerText: cfg.header_text,
-    footerText: cfg.footer_text,
+    bodyText: interpolateVars(cfg.text, run.vars),
+    buttonLabel: interpolateVars(cfg.button_label, run.vars),
+    headerText: interpolateOptionalVars(cfg.header_text, run.vars),
+    footerText: interpolateOptionalVars(cfg.footer_text, run.vars),
     sections: cfg.sections.map((s) => ({
-      title: s.title,
+      title: interpolateOptionalVars(s.title, run.vars),
       rows: s.rows.map((r) => ({
         id: r.reply_id,
-        title: r.title,
-        description: r.description,
+        title: interpolateVars(r.title, run.vars),
+        description: interpolateOptionalVars(r.description, run.vars),
       })),
     })),
   });
@@ -513,6 +567,23 @@ function interpolateVars(template: string, vars: Record<string, unknown>): strin
   });
 }
 
+/**
+ * `interpolateVars` for optional config fields (header_text, footer_text,
+ * list section titles, row descriptions). An absent field stays absent
+ * — `interpolateVars(undefined)` would return "" and meta-api treats
+ * header/footer/description by truthiness, so "" is harmless there, but
+ * keeping `undefined` means the payload we log and send matches what
+ * the author configured rather than sprouting empty strings.
+ */
+function interpolateOptionalVars(
+  template: string | undefined,
+  vars: Record<string, unknown>,
+): string | undefined {
+  return template === undefined || template === null
+    ? undefined
+    : interpolateVars(template, vars);
+}
+
 async function endRun(
   db: AdminClient,
   runId: string,
@@ -573,7 +644,8 @@ async function advanceFromNodeKey(
       const cfg = node.config as unknown as SendMessageNodeConfig;
       try {
         const { whatsapp_message_id } = await engineSendText({
-          userId: run.user_id,
+          accountId: run.account_id,
+    userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
           text: interpolateVars(cfg.text, run.vars),
@@ -593,13 +665,45 @@ async function advanceFromNodeKey(
       currentKey = cfg.next_node_key;
       continue;
     }
+    if (node.node_type === "send_media") {
+      const cfg = node.config as unknown as SendMediaNodeConfig;
+      try {
+        const { whatsapp_message_id } = await engineSendMedia({
+          accountId: run.account_id,
+    userId: run.user_id,
+          conversationId: run.conversation_id!,
+          contactId: run.contact_id!,
+          kind: cfg.media_type,
+          link: cfg.media_url,
+          caption: cfg.caption
+            ? interpolateVars(cfg.caption, run.vars)
+            : undefined,
+          filename: cfg.filename,
+        });
+        await logEvent(db, run.id, "message_sent", node.node_key, {
+          node_type: "send_media",
+          media_type: cfg.media_type,
+          whatsapp_message_id,
+        });
+      } catch (err) {
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "send_media_failed",
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        await endRun(db, run.id, "failed", "send_media_failed");
+        return { outcome: "completed" };
+      }
+      currentKey = cfg.next_node_key;
+      continue;
+    }
     if (node.node_type === "collect_input") {
       // Send the prompt and suspend. Customer's next TEXT reply will
       // wake us up via handleReplyForActiveRun's collect_input branch.
       const cfg = node.config as unknown as CollectInputNodeConfig;
       try {
         const { whatsapp_message_id } = await engineSendText({
-          userId: run.user_id,
+          accountId: run.account_id,
+    userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
           text: interpolateVars(cfg.prompt_text, run.vars),
@@ -667,18 +771,22 @@ async function advanceFromNodeKey(
       const cfg = node.config as unknown as SetTagNodeConfig;
       try {
         if (cfg.mode === "add") {
-          await db
-            .from("contact_tags")
-            .upsert(
-              { contact_id: run.contact_id!, tag_id: cfg.tag_id },
-              { onConflict: "contact_id,tag_id" },
-            );
+          await addContactTagAndDispatch({
+            db,
+            accountId: run.account_id,
+            contactId: run.contact_id!,
+            tagId: cfg.tag_id,
+            context: {
+              conversation_id: run.conversation_id ?? undefined,
+              vars: run.vars,
+            },
+          });
         } else {
-          await db
-            .from("contact_tags")
-            .delete()
-            .eq("contact_id", run.contact_id!)
-            .eq("tag_id", cfg.tag_id);
+          await removeContactTag(db, {
+            accountId: run.account_id,
+            contactId: run.contact_id!,
+            tagId: cfg.tag_id,
+          });
         }
       } catch (err) {
         // Non-fatal — log + advance. A tag-write failure shouldn't
@@ -692,7 +800,23 @@ async function advanceFromNodeKey(
       continue;
     }
     if (node.node_type === "send_buttons") {
-      await sendButtonsAndSuspend(db, run, node);
+      // Same failure contract as send_message / send_media /
+      // collect_input above: log + fail the run. Previously an
+      // exception here (Meta error, or meta-api's length validation —
+      // now reachable via interpolation, see sendButtonsAndSuspend)
+      // escaped to dispatchInboundToFlows' catch, which only
+      // console.error'd and left the run active + stuck on the prior
+      // node with nothing in flow_run_events.
+      try {
+        await sendButtonsAndSuspend(db, run, node);
+      } catch (err) {
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "send_buttons_failed",
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        await endRun(db, run.id, "failed", "send_buttons_failed");
+        return { outcome: "completed" };
+      }
       // Persist the new current_node_key via optimistic UPDATE.
       const advanced = await advanceCurrentNodeKey(
         db,
@@ -708,7 +832,16 @@ async function advanceFromNodeKey(
       return { outcome: "advanced" };
     }
     if (node.node_type === "send_list") {
-      await sendListAndSuspend(db, run, node);
+      try {
+        await sendListAndSuspend(db, run, node);
+      } catch (err) {
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "send_list_failed",
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        await endRun(db, run.id, "failed", "send_list_failed");
+        return { outcome: "completed" };
+      }
       const advanced = await advanceCurrentNodeKey(
         db,
         run.id,
@@ -792,7 +925,7 @@ export async function dispatchInboundToFlows(
   try {
     const activeRun = await loadActiveRunForContact(
       db,
-      input.userId,
+      input.accountId,
       input.contactId,
     );
 
@@ -802,7 +935,7 @@ export async function dispatchInboundToFlows(
     if (activeRun) {
       const dupe = await isDuplicateInbound(
         db,
-        input.userId,
+        input.accountId,
         input.contactId,
         input.message.meta_message_id,
       );
@@ -822,7 +955,7 @@ export async function dispatchInboundToFlows(
     // No active run → look for a flow whose entry trigger matches.
     const flow = await findEntryFlow(
       db,
-      input.userId,
+      input.accountId,
       input.message,
       input.isFirstInboundMessage,
     );
@@ -964,27 +1097,32 @@ async function handleReplyForActiveRun(
   }
   if (action.type === "reprompt") {
     // Re-send the same prompt. Same node, no current_node_key change.
-    if (currentNode.node_type === "send_buttons") {
-      await sendButtonsAndSuspend(db, run, currentNode);
-    } else if (currentNode.node_type === "send_list") {
-      await sendListAndSuspend(db, run, currentNode);
-    } else if (currentNode.node_type === "collect_input") {
-      // Customer typed something we couldn't accept (empty after trim,
-      // or var_key missing — rare). Re-send the prompt so they try again.
-      const cfg = currentNode.config as unknown as CollectInputNodeConfig;
-      try {
+    // The interactive helpers interpolate run.vars themselves, so a
+    // reprompt renders the same text the original prompt did. A send
+    // failure here is logged but does not end the run — the customer
+    // still has the original prompt on screen and can retry.
+    try {
+      if (currentNode.node_type === "send_buttons") {
+        await sendButtonsAndSuspend(db, run, currentNode);
+      } else if (currentNode.node_type === "send_list") {
+        await sendListAndSuspend(db, run, currentNode);
+      } else if (currentNode.node_type === "collect_input") {
+        // Customer typed something we couldn't accept (empty after trim,
+        // or var_key missing — rare). Re-send the prompt so they try again.
+        const cfg = currentNode.config as unknown as CollectInputNodeConfig;
         await engineSendText({
+          accountId: run.account_id,
           userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
           text: interpolateVars(cfg.prompt_text, run.vars),
         });
-      } catch (err) {
-        await logEvent(db, run.id, "error", currentNode.node_key, {
-          reason: "reprompt_send_failed",
-          detail: err instanceof Error ? err.message : String(err),
-        });
       }
+    } catch (err) {
+      await logEvent(db, run.id, "error", currentNode.node_key, {
+        reason: "reprompt_send_failed",
+        detail: err instanceof Error ? err.message : String(err),
+      });
     }
     return { consumed: true, flow_run_id: run.id, outcome: "fallback_fired" };
   }
@@ -1019,6 +1157,13 @@ async function startNewRun(
     .from("flow_runs")
     .insert({
       flow_id: flow.id,
+      // Tenancy: NOT NULL post-017. The partial unique index
+      // `idx_one_active_run_per_contact` is over (account_id,
+      // contact_id) WHERE status='active', so two accounts sharing
+      // a contact phone number each run their own flows independently.
+      account_id: flow.account_id,
+      // Audit: preserves the flow's author on the run row for log
+      // attribution.
       user_id: flow.user_id,
       contact_id: input.contactId,
       conversation_id: input.conversationId,
