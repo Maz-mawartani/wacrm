@@ -33,6 +33,7 @@ import {
   Search,
   Plus,
   Upload,
+  Download,
   MoreHorizontal,
   Pencil,
   Trash2,
@@ -46,6 +47,8 @@ import { ContactDetailView } from '@/components/contacts/contact-detail-view';
 import { ImportModal } from '@/components/contacts/import-modal';
 
 const PAGE_SIZE = 25;
+const EXPORT_BATCH_SIZE = 1000;
+const TAG_LOOKUP_BATCH_SIZE = 200;
 
 interface ContactWithTags extends Contact {
   tags?: Tag[];
@@ -70,6 +73,7 @@ export default function ContactsPage() {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Contact | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   // All tags for display
   const [tagsMap, setTagsMap] = useState<Record<string, Tag>>({});
@@ -145,12 +149,10 @@ export default function ContactsPage() {
   // synchronously in the effect body, so the cascade the lint rule
   // warns about doesn't apply here.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchTags();
   }, [fetchTags]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchContacts();
   }, [fetchContacts]);
 
@@ -201,6 +203,117 @@ export default function ContactsPage() {
     setDeleteTarget(null);
   }
 
+  function csvCell(value: unknown): string {
+    const text = value == null ? '' : String(value);
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+
+  function downloadCsv(filename: string, rows: unknown[][]) {
+    const content = rows.map((row) => row.map(csvCell).join(',')).join('\r\n');
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function fetchContactTags(contactIds: string[]) {
+    const uniqueIds = [...new Set(contactIds.filter(Boolean))];
+    const tagsByContact = new Map<string, string[]>();
+    if (uniqueIds.length === 0) return tagsByContact;
+
+    for (let i = 0; i < uniqueIds.length; i += TAG_LOOKUP_BATCH_SIZE) {
+      const batch = uniqueIds.slice(i, i + TAG_LOOKUP_BATCH_SIZE);
+      const { data, error } = await supabase
+        .from('contact_tags')
+        .select('contact_id, tag_id')
+        .in('contact_id', batch);
+
+      if (error) {
+        throw new Error(`Failed to load contact tags: ${error.message}`);
+      }
+
+      for (const row of data ?? []) {
+        const tag = tagsMap[row.tag_id];
+        if (!tag) continue;
+        const current = tagsByContact.get(row.contact_id) ?? [];
+        current.push(tag.name);
+        tagsByContact.set(row.contact_id, current);
+      }
+    }
+    return tagsByContact;
+  }
+
+  async function handleExportContacts() {
+    setExporting(true);
+    try {
+      const exported: Contact[] = [];
+      for (let from = 0; ; from += EXPORT_BATCH_SIZE) {
+        let query = supabase
+          .from('contacts')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .range(from, from + EXPORT_BATCH_SIZE - 1);
+
+        if (search.trim()) {
+          const term = `%${search.trim()}%`;
+          query = query.or(`name.ilike.${term},phone.ilike.${term},email.ilike.${term}`);
+        }
+
+        const { data, error } = await query;
+        if (error) {
+          throw new Error(error.message);
+        }
+
+        exported.push(...((data ?? []) as Contact[]));
+        if (!data || data.length < EXPORT_BATCH_SIZE) break;
+      }
+
+      if (exported.length === 0) {
+        toast.info('No contacts to export');
+        return;
+      }
+
+      const tagsByContact = await fetchContactTags(exported.map((c) => c.id));
+      const header = [
+        'id',
+        'name',
+        'phone',
+        'email',
+        'company',
+        'tags',
+        'created_at',
+        'updated_at',
+      ];
+      const rows = exported.map((contact) => [
+        contact.id,
+        contact.name ?? '',
+        contact.phone,
+        contact.email ?? '',
+        contact.company ?? '',
+        (tagsByContact.get(contact.id) ?? []).join('; '),
+        contact.created_at,
+        contact.updated_at,
+      ]);
+      const suffix = search.trim() ? 'filtered' : 'all';
+      downloadCsv(`contacts-${suffix}-${new Date().toISOString().slice(0, 10)}.csv`, [
+        header,
+        ...rows,
+      ]);
+      toast.success(`Exported ${exported.length} contacts`);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : 'Failed to export contacts'
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
+
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
   const hasNext = page < totalPages - 1;
   const hasPrev = page > 0;
@@ -216,6 +329,19 @@ export default function ContactsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={handleExportContacts}
+            disabled={exporting || totalCount === 0}
+            className="border-slate-700 text-slate-300 hover:bg-slate-800"
+          >
+            {exporting ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Download className="size-4" />
+            )}
+            Export
+          </Button>
           <Button
             variant="outline"
             onClick={() => setImportOpen(true)}

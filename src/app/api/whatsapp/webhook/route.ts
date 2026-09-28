@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption';
-import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api';
+import { getMediaUrl } from '@/lib/whatsapp/meta-api';
 import { normalizePhone, phonesMatch } from '@/lib/whatsapp/phone-utils';
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature';
 import { runAutomationsForTrigger } from '@/lib/automations/engine';
@@ -87,6 +87,42 @@ interface WhatsAppWebhookEntry {
     };
     field: string;
   }>;
+}
+
+type BroadcastVariableMapping =
+  | { type: 'static'; value: string }
+  | { type: 'field'; value: string }
+  | { type: 'custom_field'; value: string };
+
+interface ContactRecord {
+  id: string;
+  phone?: string | null;
+  name?: string | null;
+  email?: string | null;
+  company?: string | null;
+}
+
+interface BroadcastReplyRecipient {
+  id: string;
+  status: string;
+  whatsapp_message_id: string | null;
+  sent_at?: string | null;
+  delivered_at?: string | null;
+  read_at?: string | null;
+  created_at?: string | null;
+  broadcasts:
+    | {
+        user_id?: string;
+        template_name: string;
+        template_language: string;
+        template_variables?: unknown;
+      }
+    | {
+        user_id?: string;
+        template_name: string;
+        template_language: string;
+        template_variables?: unknown;
+      }[];
 }
 
 // GET - Webhook verification
@@ -391,31 +427,254 @@ function formatMetaStatusErrors(
  * Runs on a best-effort basis — failures here must not break the
  * main inbound-message flow, so errors are swallowed with a log.
  */
-async function flagBroadcastReplyIfAny(userId: string, contactId: string) {
-  try {
-    // Most recent outbound broadcast that hasn't been replied to yet.
-    const { data: recs, error } = await supabaseAdmin()
+async function findBroadcastReplyRecipient(
+  userId: string,
+  contactId: string,
+  contextMessageId?: string
+): Promise<BroadcastReplyRecipient | null> {
+  const select =
+    'id, status, whatsapp_message_id, sent_at, delivered_at, read_at, created_at, broadcasts!inner(user_id, template_name, template_language, template_variables)';
+
+  if (contextMessageId) {
+    const { data, error } = await supabaseAdmin()
       .from('broadcast_recipients')
-      .select('id, status, broadcast_id, broadcasts!inner(user_id)')
+      .select(select)
       .eq('contact_id', contactId)
+      .eq('whatsapp_message_id', contextMessageId)
       .eq('broadcasts.user_id', userId)
-      .in('status', ['sent', 'delivered', 'read'])
-      .order('created_at', { ascending: false })
-      .limit(1);
+      .in('status', ['pending', 'sent', 'delivered', 'read'])
+      .maybeSingle();
 
-    if (error || !recs || recs.length === 0) return;
+    if (error) {
+      console.error('Error finding contextual broadcast recipient:', error);
+      return null;
+    }
 
-    const row = recs[0];
+    if (data) return data as BroadcastReplyRecipient;
+  }
+
+  // Most recent outbound broadcast that hasn't been replied to yet.
+  // `pending` is included only when a Meta message id exists: the
+  // customer can reply before Meta's sent/delivered webhook reaches us.
+  const { data: recs, error } = await supabaseAdmin()
+    .from('broadcast_recipients')
+    .select(select)
+    .eq('contact_id', contactId)
+    .eq('broadcasts.user_id', userId)
+    .not('whatsapp_message_id', 'is', null)
+    .in('status', ['pending', 'sent', 'delivered', 'read'])
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (error) {
+    console.error('Error finding broadcast recipient:', error);
+    return null;
+  }
+
+  return recs?.[0] ? (recs[0] as BroadcastReplyRecipient) : null;
+}
+
+function broadcastFromRecipient(row: BroadcastReplyRecipient) {
+  return Array.isArray(row.broadcasts) ? row.broadcasts[0] : row.broadcasts;
+}
+
+function normalizeBroadcastVariables(
+  value: unknown
+): Record<string, BroadcastVariableMapping> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+
+  const normalized: Record<string, BroadcastVariableMapping> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const candidate = raw as { type?: unknown; value?: unknown };
+    if (
+      (candidate.type === 'static' ||
+        candidate.type === 'field' ||
+        candidate.type === 'custom_field') &&
+      typeof candidate.value === 'string'
+    ) {
+      normalized[key] = {
+        type: candidate.type,
+        value: candidate.value,
+      };
+    }
+  }
+  return normalized;
+}
+
+async function getContactCustomValues(contactId: string) {
+  const { data, error } = await supabaseAdmin()
+    .from('contact_custom_values')
+    .select('custom_field_id, value')
+    .eq('contact_id', contactId);
+
+  if (error) {
+    console.error('Error fetching contact custom values:', error);
+    return new Map<string, string>();
+  }
+
+  const values = new Map<string, string>();
+  for (const row of data ?? []) {
+    values.set(row.custom_field_id, row.value ?? '');
+  }
+  return values;
+}
+
+function resolveBroadcastVariable(
+  mapping: BroadcastVariableMapping | undefined,
+  contact: ContactRecord,
+  customValues: Map<string, string>
+): string {
+  if (!mapping) return '';
+  if (mapping.type === 'static') return mapping.value;
+  if (mapping.type === 'custom_field') return customValues.get(mapping.value) ?? '';
+
+  const fieldMap: Record<string, string | null | undefined> = {
+    name: contact.name,
+    phone: contact.phone,
+    email: contact.email,
+    company: contact.company,
+  };
+  return fieldMap[mapping.value] ?? '';
+}
+
+async function renderBroadcastMessageText(
+  userId: string,
+  recipient: BroadcastReplyRecipient,
+  contact: ContactRecord
+): Promise<string> {
+  const broadcast = broadcastFromRecipient(recipient);
+  const templateName = broadcast?.template_name ?? '';
+  const templateLanguage = broadcast?.template_language ?? 'en_US';
+
+  const { data: template, error } = await supabaseAdmin()
+    .from('message_templates')
+    .select('body_text, footer_text')
+    .eq('user_id', userId)
+    .eq('name', templateName)
+    .eq('language', templateLanguage)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Error fetching broadcast template body:', error);
+  }
+
+  if (!template?.body_text) return `[Broadcast: ${templateName}]`;
+
+  const variables = normalizeBroadcastVariables(broadcast?.template_variables);
+  const needsCustomValues = Object.values(variables).some(
+    (mapping) => mapping.type === 'custom_field'
+  );
+  const customValues = needsCustomValues
+    ? await getContactCustomValues(contact.id)
+    : new Map<string, string>();
+
+  const body = template.body_text.replace(
+    /\{\{(\d+)\}\}/g,
+    (_match: string, raw: string) =>
+      resolveBroadcastVariable(variables[raw], contact, customValues)
+  );
+  const footer = template.footer_text?.trim();
+
+  return footer ? `${body}\n\n${footer}` : body;
+}
+
+function messageStatusFromBroadcastRecipient(status: string) {
+  if (status === 'read') return 'read';
+  if (status === 'delivered') return 'delivered';
+  return 'sent';
+}
+
+async function ensureBroadcastMessageInConversation(
+  userId: string,
+  conversationId: string,
+  contact: ContactRecord,
+  recipient: BroadcastReplyRecipient
+) {
+  if (!recipient.whatsapp_message_id) return;
+
+  const { data: existing, error: existingError } = await supabaseAdmin()
+    .from('messages')
+    .select('id')
+    .eq('conversation_id', conversationId)
+    .eq('message_id', recipient.whatsapp_message_id)
+    .maybeSingle();
+
+  if (existingError) {
+    console.error('Error checking broadcast message in inbox:', existingError);
+    return;
+  }
+  if (existing) return;
+
+  const broadcast = broadcastFromRecipient(recipient);
+  const contentText = await renderBroadcastMessageText(
+    userId,
+    recipient,
+    contact
+  );
+  const createdAt =
+    recipient.sent_at ??
+    recipient.delivered_at ??
+    recipient.read_at ??
+    recipient.created_at ??
+    new Date().toISOString();
+
+  const { error: insertError } = await supabaseAdmin().from('messages').insert({
+    conversation_id: conversationId,
+    sender_type: 'agent',
+    content_type: 'template',
+    content_text: contentText,
+    template_name: broadcast?.template_name ?? null,
+    message_id: recipient.whatsapp_message_id,
+    status: messageStatusFromBroadcastRecipient(recipient.status),
+    created_at: createdAt,
+  });
+
+  if (insertError) {
+    console.error('Error inserting broadcast message into inbox:', insertError);
+  }
+}
+
+async function backfillBroadcastMessageIfAny(
+  userId: string,
+  contact: ContactRecord,
+  conversationId: string,
+  contextMessageId?: string
+): Promise<string | null> {
+  try {
+    const row = await findBroadcastReplyRecipient(
+      userId,
+      contact.id,
+      contextMessageId
+    );
+    if (!row) return null;
+
+    await ensureBroadcastMessageInConversation(
+      userId,
+      conversationId,
+      contact,
+      row
+    );
+
+    return row.id;
+  } catch (err) {
+    console.error('backfillBroadcastMessageIfAny failed:', err);
+    return null;
+  }
+}
+
+async function markBroadcastRecipientReplied(recipientId: string) {
+  try {
     const { error: updErr } = await supabaseAdmin()
       .from('broadcast_recipients')
       .update({ status: 'replied', replied_at: new Date().toISOString() })
-      .eq('id', row.id);
+      .eq('id', recipientId);
 
     if (updErr) {
       console.error('Error marking broadcast recipient replied:', updErr);
     }
   } catch (err) {
-    console.error('flagBroadcastReplyIfAny failed:', err);
+    console.error('markBroadcastRecipientReplied failed:', err);
   }
 }
 
@@ -534,6 +793,18 @@ async function processMessage(
   const { contentText, mediaUrl, mediaType, interactiveReplyId } =
     await parseMessageContent(message, accessToken);
 
+  // If this inbound is a reply to a recent broadcast, backfill the
+  // original outbound template into this conversation before resolving
+  // reply context. That lets the inbox show the broadcast that prompted
+  // the customer response without creating conversations for every
+  // broadcast recipient who never replied.
+  const broadcastReplyRecipientId = await backfillBroadcastMessageIfAny(
+    userId,
+    contactRecord,
+    conversation.id,
+    message.context?.id
+  );
+
   // Resolve swipe-reply context if present. A missing parent is fine —
   // we just store NULL and the UI renders the message without a quote.
   let replyToInternalId: string | null = null;
@@ -630,9 +901,11 @@ async function processMessage(
   }
 
   // If this contact was a recent broadcast recipient, flag the reply
-  // so the broadcast's `replied_count` advances (via the aggregate
-  // trigger installed in migration 003).
-  await flagBroadcastReplyIfAny(userId, contactRecord.id);
+  // after the inbound message is safely persisted so the aggregate
+  // replied_count stays tied to a real conversation event.
+  if (broadcastReplyRecipientId) {
+    await markBroadcastRecipientReplied(broadcastReplyRecipientId);
+  }
 
   // ============================================================
   // Flow runner dispatch.

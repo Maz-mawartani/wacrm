@@ -8,7 +8,6 @@ import { useRealtime } from "@/hooks/use-realtime";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
-import { toast } from "sonner";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -164,7 +163,11 @@ export default function InboxPage() {
             const withoutOptimistic = prev.filter(
               (m) => !m.id.startsWith("temp-")
             );
-            return [...withoutOptimistic, newMsg];
+            return [...withoutOptimistic, newMsg].sort(
+              (a, b) =>
+                new Date(a.created_at).getTime() -
+                new Date(b.created_at).getTime()
+            );
           });
         }
 
@@ -174,19 +177,36 @@ export default function InboxPage() {
         // knownConvIdsRef for why a closure flag inside the updater would
         // always read false here.
         if (knownConvIdsRef.current.has(newMsg.conversation_id)) {
+          const mergeMessagePreview = (conversation: Conversation) => {
+            const messageTime = new Date(newMsg.created_at).getTime();
+            const currentPreviewTime = conversation.last_message_at
+              ? new Date(conversation.last_message_at).getTime()
+              : 0;
+            const isNewerPreview = messageTime >= currentPreviewTime;
+            const isActive =
+              activeConversation?.id === newMsg.conversation_id;
+            const shouldIncrementUnread =
+              !isActive && newMsg.sender_type === "customer";
+
+            return {
+              ...conversation,
+              last_message_text: isNewerPreview
+                ? newMsg.content_text ?? ""
+                : conversation.last_message_text,
+              last_message_at: isNewerPreview
+                ? newMsg.created_at
+                : conversation.last_message_at,
+              unread_count: isActive
+                ? 0
+                : shouldIncrementUnread
+                  ? conversation.unread_count + 1
+                  : conversation.unread_count,
+            };
+          };
+
           setConversations((prev) =>
             prev.map((c) =>
-              c.id === newMsg.conversation_id
-                ? {
-                    ...c,
-                    last_message_text: newMsg.content_text ?? "",
-                    last_message_at: newMsg.created_at,
-                    unread_count:
-                      activeConversation?.id === newMsg.conversation_id
-                        ? 0
-                        : c.unread_count + 1,
-                  }
-                : c,
+              c.id === newMsg.conversation_id ? mergeMessagePreview(c) : c,
             ),
           );
         } else {
